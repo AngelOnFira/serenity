@@ -1,4 +1,9 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src&#x2F;builder&#x2F;create_invite.rs`."><meta name="keywords" content="rust, rustlang, rust-lang"><title>create_invite.rs - source</title><link rel="stylesheet" type="text/css" href="../../../normalize.css"><link rel="stylesheet" type="text/css" href="../../../rustdoc.css" id="mainThemeStyle"><link rel="stylesheet" type="text/css" href="../../../light.css"  id="themeStyle"><link rel="stylesheet" type="text/css" href="../../../dark.css" disabled ><link rel="stylesheet" type="text/css" href="../../../ayu.css" disabled ><script id="default-settings" ></script><script src="../../../storage.js"></script><script src="../../../crates.js"></script><noscript><link rel="stylesheet" href="../../../noscript.css"></noscript><link rel="icon" type="image/svg+xml" href="../../../favicon.svg"><link rel="alternate icon" type="image/png" href="../../../favicon-16x16.png"><link rel="alternate icon" type="image/png" href="../../../favicon-32x32.png"><style type="text/css">#crate-search{background-image:url("../../../down-arrow.svg");}</style></head><body class="rustdoc source"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="sidebar-menu" role="button">&#9776;</div><a href='../../../serenity/index.html'><div class='logo-container rust-logo'><img src='../../../rust-logo.png' alt='logo'></div></a></nav><div class="theme-picker"><button id="theme-picker" aria-label="Pick another theme!" aria-haspopup="menu" title="themes"><img width="18" height="18" alt="Pick another theme!" src="../../../brush.svg"></button><div id="theme-choices" role="menu"></div></div><nav class="sub"><form class="search-form"><div class="search-container"><div><select id="crate-search"><option value="All crates">All crates</option></select><input class="search-input" name="search" disabled autocomplete="off" spellcheck="false" placeholder="Click or press ‘S’ to search, ‘?’ for more options…" type="search"></div><button type="button" id="help-button" title="help">?</button><a id="settings-menu" href="../../../settings.html" title="settings"><img width="18" height="18" alt="Change settings" src="../../../wheel.svg"></a></div></form></nav><section id="main" class="content"><div class="example-wrap"><pre class="line-numbers"><span id="1">  1</span>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `src/builder/create_invite.rs`."><meta name="keywords" content="rust, rustlang, rust-lang"><title>create_invite.rs - source</title><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../SourceSerif4-Regular.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../FiraSans-Regular.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../FiraSans-Medium.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../SourceCodePro-Regular.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../SourceSerif4-Bold.ttf.woff2"><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../SourceCodePro-Semibold.ttf.woff2"><link rel="stylesheet" type="text/css" href="../../../normalize.css"><link rel="stylesheet" type="text/css" href="../../../rustdoc.css" id="mainThemeStyle"><link rel="stylesheet" type="text/css" href="../../../ayu.css" disabled><link rel="stylesheet" type="text/css" href="../../../dark.css" disabled><link rel="stylesheet" type="text/css" href="../../../light.css" id="themeStyle"><script id="default-settings" ></script><script src="../../../storage.js"></script><script src="../../../crates.js"></script><script defer src="../../../main.js"></script><script defer src="../../../source-script.js"></script><script defer src="../../../source-files.js"></script>
+    <noscript><link rel="stylesheet" href="../../../noscript.css"></noscript><link rel="alternate icon" type="image/png" href="../../../favicon-16x16.png"><link rel="alternate icon" type="image/png" href="../../../favicon-32x32.png"><link rel="icon" type="image/svg+xml" href="../../../favicon.svg"></head><body class="rustdoc source"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle">&#9776;</button><a class="sidebar-logo" href="../../../serenity/index.html"><div class="logo-container"><img class="rust-logo" src="../../../rust-logo.svg" alt="logo"></div>
+        </a><h2 class="location"></h2>
+    </nav>
+    <nav class="sidebar"><a class="sidebar-logo" href="../../../serenity/index.html"><div class="logo-container"><img class="rust-logo" src="../../../rust-logo.svg" alt="logo"></div>
+        </a></nav><main><div class="width-limiter"><div class="sub-container"><a class="sub-logo-container" href="../../../serenity/index.html"><img class="rust-logo" src="../../../rust-logo.svg" alt="logo"></a><nav class="sub"><div class="theme-picker hidden"><button id="theme-picker" aria-label="Pick another theme!" aria-haspopup="menu" title="themes"><img width="22" height="22" alt="Pick another theme!" src="../../../brush.svg"></button><div id="theme-choices" role="menu"></div></div><form class="search-form"><div class="search-container"><span></span><input class="search-input" name="search" autocomplete="off" spellcheck="false" placeholder="Click or press ‘S’ to search, ‘?’ for more options…" type="search"><button type="button" id="help-button" title="help">?</button><a id="settings-menu" href="../../../settings.html" title="settings"><img width="22" height="22" alt="Change settings" src="../../../wheel.svg"></a></div></form></nav></div><section id="main-content" class="content"><div class="example-wrap"><pre class="line-numbers"><span id="1">  1</span>
 <span id="2">  2</span>
 <span id="3">  3</span>
 <span id="4">  4</span>
@@ -225,10 +230,43 @@
 <span id="225">225</span>
 <span id="226">226</span>
 <span id="227">227</span>
-</pre><pre class="rust">
-<span class="kw">use</span> <span class="ident">std::collections::HashMap</span>;
+<span id="228">228</span>
+<span id="229">229</span>
+<span id="230">230</span>
+<span id="231">231</span>
+<span id="232">232</span>
+<span id="233">233</span>
+<span id="234">234</span>
+<span id="235">235</span>
+<span id="236">236</span>
+<span id="237">237</span>
+<span id="238">238</span>
+<span id="239">239</span>
+<span id="240">240</span>
+<span id="241">241</span>
+<span id="242">242</span>
+<span id="243">243</span>
+<span id="244">244</span>
+<span id="245">245</span>
+<span id="246">246</span>
+<span id="247">247</span>
+<span id="248">248</span>
+<span id="249">249</span>
+<span id="250">250</span>
+<span id="251">251</span>
+<span id="252">252</span>
+<span id="253">253</span>
+<span id="254">254</span>
+<span id="255">255</span>
+<span id="256">256</span>
+<span id="257">257</span>
+<span id="258">258</span>
+<span id="259">259</span>
+</pre><pre class="rust"><code><span class="kw">use</span> <span class="ident">std::collections::HashMap</span>;
 
 <span class="kw">use</span> <span class="ident"><span class="kw">crate</span>::json</span>::{<span class="ident">from_number</span>, <span class="ident">Value</span>, <span class="ident">NULL</span>};
+<span class="kw">use</span> <span class="ident"><span class="kw">crate</span>::model::id</span>::{<span class="ident">ApplicationId</span>, <span class="ident">UserId</span>};
+<span class="kw">use</span> <span class="ident"><span class="kw">crate</span>::model::invite::InviteTargetType</span>;
 
 <span class="doccomment">/// A builder to create a [`RichInvite`] for use via [`GuildChannel::create_invite`].</span>
 <span class="doccomment">///</span>
@@ -250,7 +288,7 @@
 <span class="doccomment">///</span>
 <span class="doccomment">/// #[serenity::async_trait]</span>
 <span class="doccomment">/// impl EventHandler for Handler {</span>
-<span class="doccomment">///    async fn message(&amp;self, context: Context, msg: Message) {</span>
+<span class="doccomment">///     async fn message(&amp;self, context: Context, msg: Message) {</span>
 <span class="doccomment">///         if msg.content == &quot;!createinvite&quot; {</span>
 <span class="doccomment">///             let channel = match context.cache.guild_channel(msg.channel_id) {</span>
 <span class="doccomment">///                 Some(channel) =&gt; channel,</span>
@@ -260,19 +298,16 @@
 <span class="doccomment">///                 },</span>
 <span class="doccomment">///             };</span>
 <span class="doccomment">///</span>
-<span class="doccomment">///             let creation = channel.create_invite(&amp;context, |i| {</span>
-<span class="doccomment">///                 i.max_age(3600).max_uses(10)</span>
-<span class="doccomment">///             })</span>
-<span class="doccomment">///             .await;</span>
+<span class="doccomment">///             let creation =</span>
+<span class="doccomment">///                 channel.create_invite(&amp;context, |i| i.max_age(3600).max_uses(10)).await;</span>
 <span class="doccomment">///</span>
 <span class="doccomment">///             let invite = match creation {</span>
 <span class="doccomment">///                 Ok(invite) =&gt; invite,</span>
 <span class="doccomment">///                 Err(why) =&gt; {</span>
 <span class="doccomment">///                     println!(&quot;Err creating invite: {:?}&quot;, why);</span>
-<span class="doccomment">///                     if let Err(why) = msg</span>
-<span class="doccomment">///                         .channel_id</span>
-<span class="doccomment">///                         .say(&amp;context, &quot;Error creating invite&quot;)</span>
-<span class="doccomment">///                         .await {</span>
+<span class="doccomment">///                     if let Err(why) =</span>
+<span class="doccomment">///                         msg.channel_id.say(&amp;context, &quot;Error creating invite&quot;).await</span>
+<span class="doccomment">///                     {</span>
 <span class="doccomment">///                         println!(&quot;Err sending err msg: {:?}&quot;, why);</span>
 <span class="doccomment">///                     }</span>
 <span class="doccomment">///</span>
@@ -286,7 +321,7 @@
 <span class="doccomment">///     }</span>
 <span class="doccomment">/// }</span>
 <span class="doccomment">///</span>
-<span class="doccomment">/// let mut client =Client::builder(&quot;token&quot;).event_handler(Handler).await?;</span>
+<span class="doccomment">/// let mut client = Client::builder(&quot;token&quot;).event_handler(Handler).await?;</span>
 <span class="doccomment">///</span>
 <span class="doccomment">/// client.start().await?;</span>
 <span class="doccomment">/// #     Ok(())</span>
@@ -328,7 +363,7 @@
     <span class="doccomment">/// #     Ok(())</span>
     <span class="doccomment">/// # }</span>
     <span class="doccomment">/// ```</span>
-    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">max_age</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="ident">max_age</span>: <span class="ident">u64</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">Self</span> {
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">max_age</span>(<span class="kw-2">&amp;mut</span> <span class="self">self</span>, <span class="ident">max_age</span>: <span class="ident">u64</span>) -&gt; <span class="kw-2">&amp;mut</span> <span class="self">Self</span> {
         <span class="self">self</span>.<span class="number">0</span>.<span class="ident">insert</span>(<span class="string">&quot;max_age&quot;</span>, <span class="ident">from_number</span>(<span class="ident">max_age</span>));
         <span class="self">self</span>
     }
@@ -362,7 +397,7 @@
     <span class="doccomment">/// #     Ok(())</span>
     <span class="doccomment">/// # }</span>
     <span class="doccomment">/// ```</span>
-    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">max_uses</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="ident">max_uses</span>: <span class="ident">u64</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">Self</span> {
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">max_uses</span>(<span class="kw-2">&amp;mut</span> <span class="self">self</span>, <span class="ident">max_uses</span>: <span class="ident">u64</span>) -&gt; <span class="kw-2">&amp;mut</span> <span class="self">Self</span> {
         <span class="self">self</span>.<span class="number">0</span>.<span class="ident">insert</span>(<span class="string">&quot;max_uses&quot;</span>, <span class="ident">from_number</span>(<span class="ident">max_uses</span>));
         <span class="self">self</span>
     }
@@ -396,7 +431,7 @@
     <span class="doccomment">/// #</span>
     <span class="doccomment">/// # fn main() {}</span>
     <span class="doccomment">/// ```</span>
-    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">temporary</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="ident">temporary</span>: <span class="ident">bool</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">Self</span> {
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">temporary</span>(<span class="kw-2">&amp;mut</span> <span class="self">self</span>, <span class="ident">temporary</span>: <span class="ident">bool</span>) -&gt; <span class="kw-2">&amp;mut</span> <span class="self">Self</span> {
         <span class="self">self</span>.<span class="number">0</span>.<span class="ident">insert</span>(<span class="string">&quot;temporary&quot;</span>, <span class="ident">Value::from</span>(<span class="ident">temporary</span>));
         <span class="self">self</span>
     }
@@ -428,8 +463,41 @@
     <span class="doccomment">/// #     Ok(())</span>
     <span class="doccomment">/// # }</span>
     <span class="doccomment">/// ```</span>
-    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">unique</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="ident">unique</span>: <span class="ident">bool</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">Self</span> {
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">unique</span>(<span class="kw-2">&amp;mut</span> <span class="self">self</span>, <span class="ident">unique</span>: <span class="ident">bool</span>) -&gt; <span class="kw-2">&amp;mut</span> <span class="self">Self</span> {
         <span class="self">self</span>.<span class="number">0</span>.<span class="ident">insert</span>(<span class="string">&quot;unique&quot;</span>, <span class="ident">Value::from</span>(<span class="ident">unique</span>));
+        <span class="self">self</span>
+    }
+
+    <span class="doccomment">/// The type of target for this voice channel invite.</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">target_type</span>(<span class="kw-2">&amp;mut</span> <span class="self">self</span>, <span class="ident">target_type</span>: <span class="ident">InviteTargetType</span>) -&gt; <span class="kw-2">&amp;mut</span> <span class="self">Self</span> {
+        <span class="self">self</span>.<span class="number">0</span>.<span class="ident">insert</span>(<span class="string">&quot;target_type&quot;</span>, <span class="ident">from_number</span>(<span class="ident">target_type</span> <span class="kw">as</span> <span class="ident">u8</span>));
+        <span class="self">self</span>
+    }
+
+    <span class="doccomment">/// The ID of the user whose stream to display for this invite, required if `target_type` is</span>
+    <span class="doccomment">/// `Stream`</span>
+    <span class="doccomment">/// The user must be streaming in the channel.</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">target_user_id</span>(<span class="kw-2">&amp;mut</span> <span class="self">self</span>, <span class="ident">target_user_id</span>: <span class="ident">UserId</span>) -&gt; <span class="kw-2">&amp;mut</span> <span class="self">Self</span> {
+        <span class="self">self</span>.<span class="number">0</span>.<span class="ident">insert</span>(<span class="string">&quot;target_user_id&quot;</span>, <span class="ident">from_number</span>(<span class="ident">target_user_id</span>.<span class="number">0</span>));
+        <span class="self">self</span>
+    }
+
+    <span class="doccomment">/// The ID of the embedded application to open for this invite, required if `target_type` is</span>
+    <span class="doccomment">/// `EmmbeddedApplication`</span>
+    <span class="doccomment">/// The application must have the `EMBEDDED` flag.</span>
+    <span class="doccomment">///</span>
+    <span class="doccomment">/// When sending an invite with this value, the first user to use the invite will have to click</span>
+    <span class="doccomment">/// on the URL, that will enable the buttons in the embed.</span>
+    <span class="doccomment">///</span>
+    <span class="doccomment">/// These are some of the known applications which have the flag:</span>
+    <span class="doccomment">///</span>
+    <span class="doccomment">/// betrayal: `773336526917861400`</span>
+    <span class="doccomment">/// youtube: `755600276941176913`</span>
+    <span class="doccomment">/// fishing: `814288819477020702`</span>
+    <span class="doccomment">/// poker: `755827207812677713`</span>
+    <span class="doccomment">/// chess: `832012774040141894`</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">target_application_id</span>(<span class="kw-2">&amp;mut</span> <span class="self">self</span>, <span class="ident">target_application_id</span>: <span class="ident">ApplicationId</span>) -&gt; <span class="kw-2">&amp;mut</span> <span class="self">Self</span> {
+        <span class="self">self</span>.<span class="number">0</span>.<span class="ident">insert</span>(<span class="string">&quot;target_application_id&quot;</span>, <span class="ident">from_number</span>(<span class="ident">target_application_id</span>.<span class="number">0</span>));
         <span class="self">self</span>
     }
 }
@@ -446,14 +514,13 @@
     <span class="doccomment">///</span>
     <span class="doccomment">/// let invite_builder = CreateInvite::default();</span>
     <span class="doccomment">/// ```</span>
-    <span class="kw">fn</span> <span class="ident">default</span>() <span class="op">-</span><span class="op">&gt;</span> <span class="ident">CreateInvite</span> {
+    <span class="kw">fn</span> <span class="ident">default</span>() -&gt; <span class="ident">CreateInvite</span> {
         <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">map</span> <span class="op">=</span> <span class="ident">HashMap::new</span>();
         <span class="ident">map</span>.<span class="ident">insert</span>(<span class="string">&quot;validate&quot;</span>, <span class="ident">NULL</span>);
 
         <span class="ident">CreateInvite</span>(<span class="ident">map</span>)
     }
 }
-</pre></div>
-</section><section id="search" class="content hidden"></section><div id="rustdoc-vars" data-root-path="../../../" data-current-crate="serenity" data-search-index-js="../../../search-index.js" data-search-js="../../../search.js"></div>
-    <script src="../../../main.js"></script><script src="../../../source-script.js"></script><script src="../../../source-files.js"></script>
+</code></pre></div>
+</section><section id="search" class="content hidden"></section></div></main><div id="rustdoc-vars" data-root-path="../../../" data-current-crate="serenity" data-themes="ayu,dark,light" data-resource-suffix="" data-rustdoc-version="1.60.0-nightly (f624427f8 2022-02-06)" ></div>
 </body></html>
