@@ -727,6 +727,10 @@
 <a href="#727" id="727">727</a>
 <a href="#728" id="728">728</a>
 <a href="#729" id="729">729</a>
+<a href="#730" id="730">730</a>
+<a href="#731" id="731">731</a>
+<a href="#732" id="732">732</a>
+<a href="#733" id="733">733</a>
 </pre><pre class="rust"><code><span class="kw">use </span>serde::{Deserialize, Serialize};
 
 <span class="kw">use </span><span class="kw">crate</span>::model::prelude::<span class="kw-2">*</span>;
@@ -800,7 +804,11 @@
         <span class="comment">// Determine the type of component by looking at the first one
         </span><span class="kw">let </span>first_component = <span class="kw-2">&amp;</span>components[<span class="number">0</span>];
 
-        <span class="kw">match </span>first_component.get(<span class="string">&quot;type&quot;</span>).unwrap().as_u64() {
+        <span class="kw">let </span>component_kind = first_component
+            .get(<span class="string">&quot;type&quot;</span>)
+            .ok_or_else(|| D::Error::custom(<span class="string">&quot;expected component to have a type field&quot;</span>))<span class="question-mark">?</span>;
+
+        <span class="kw">match </span>component_kind.as_u64() {
             <span class="prelude-val">Some</span>(<span class="number">2</span>) =&gt; {
                 <span class="kw">let </span>buttons: Vec&lt;CreateButton&gt; = components
                     .into_iter()
@@ -809,7 +817,7 @@
 
                 <span class="prelude-val">Ok</span>(<span class="self">Self</span>::Buttons(buttons))
             },
-            <span class="prelude-val">Some</span>(<span class="number">3</span>) | <span class="prelude-val">Some</span>(<span class="number">5</span>) | <span class="prelude-val">Some</span>(<span class="number">6</span>) | <span class="prelude-val">Some</span>(<span class="number">7</span>) | <span class="prelude-val">Some</span>(<span class="number">8</span>) =&gt; {
+            <span class="prelude-val">Some</span>(<span class="number">3 </span>| <span class="number">5 </span>| <span class="number">6 </span>| <span class="number">7 </span>| <span class="number">8</span>) =&gt; {
                 <span class="comment">// Make sure there is only 1 component
                 </span><span class="kw">if </span>components.len() != <span class="number">1 </span>{
                     <span class="kw">return </span><span class="prelude-val">Err</span>(D::Error::custom(<span class="string">&quot;expected only one select menu&quot;</span>));
@@ -953,11 +961,11 @@
                 <span class="self">Self</span>::Channel { .. } =&gt; <span class="number">8</span>,
             },
             options: <span class="kw">match </span><span class="self">self </span>{
-                <span class="self">Self</span>::String { options } =&gt; <span class="prelude-val">Some</span>(options.to_vec()),
+                <span class="self">Self</span>::String { options } =&gt; <span class="prelude-val">Some</span>(options.clone()),
                 <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
             },
                 channel_types: <span class="kw">match </span><span class="self">self </span>{
-                <span class="self">Self</span>::Channel { channel_types } =&gt; channel_types.to_owned(),
+                <span class="self">Self</span>::Channel { channel_types } =&gt; channel_types.clone(),
                 <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
             },
         };
