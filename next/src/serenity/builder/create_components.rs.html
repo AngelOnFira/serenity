@@ -717,20 +717,6 @@
 <a href="#717" id="717">717</a>
 <a href="#718" id="718">718</a>
 <a href="#719" id="719">719</a>
-<a href="#720" id="720">720</a>
-<a href="#721" id="721">721</a>
-<a href="#722" id="722">722</a>
-<a href="#723" id="723">723</a>
-<a href="#724" id="724">724</a>
-<a href="#725" id="725">725</a>
-<a href="#726" id="726">726</a>
-<a href="#727" id="727">727</a>
-<a href="#728" id="728">728</a>
-<a href="#729" id="729">729</a>
-<a href="#730" id="730">730</a>
-<a href="#731" id="731">731</a>
-<a href="#732" id="732">732</a>
-<a href="#733" id="733">733</a>
 </pre><pre class="rust"><code><span class="kw">use </span>serde::{Deserialize, Serialize};
 
 <span class="kw">use </span><span class="kw">crate</span>::model::prelude::<span class="kw-2">*</span>;
@@ -885,20 +871,6 @@
             disabled: <span class="bool-val">false</span>,
         })
     }
-
-    <span class="doccomment">/// Sets the custom id of the button, a developer-defined identifier. Replaces the current value
-    /// as set in [`Self::new`].
-    ///
-    /// Has no effect on link buttons.
-    </span><span class="kw">pub fn </span>custom_id(<span class="kw-2">mut </span><span class="self">self</span>, id: <span class="kw">impl </span>Into&lt;String&gt;) -&gt; <span class="self">Self </span>{
-        <span class="kw">if let </span>ButtonKind::NonLink {
-            custom_id, ..
-        } = <span class="kw-2">&amp;mut </span><span class="self">self</span>.<span class="number">0</span>.data
-        {
-            <span class="kw-2">*</span>custom_id = id.into();
-        }
-        <span class="self">self
-    </span>}
 
     <span class="doccomment">/// Sets the style of this button.
     ///
