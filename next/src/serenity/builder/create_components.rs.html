@@ -653,6 +653,80 @@
 <a href="#653" id="653">653</a>
 <a href="#654" id="654">654</a>
 <a href="#655" id="655">655</a>
+<a href="#656" id="656">656</a>
+<a href="#657" id="657">657</a>
+<a href="#658" id="658">658</a>
+<a href="#659" id="659">659</a>
+<a href="#660" id="660">660</a>
+<a href="#661" id="661">661</a>
+<a href="#662" id="662">662</a>
+<a href="#663" id="663">663</a>
+<a href="#664" id="664">664</a>
+<a href="#665" id="665">665</a>
+<a href="#666" id="666">666</a>
+<a href="#667" id="667">667</a>
+<a href="#668" id="668">668</a>
+<a href="#669" id="669">669</a>
+<a href="#670" id="670">670</a>
+<a href="#671" id="671">671</a>
+<a href="#672" id="672">672</a>
+<a href="#673" id="673">673</a>
+<a href="#674" id="674">674</a>
+<a href="#675" id="675">675</a>
+<a href="#676" id="676">676</a>
+<a href="#677" id="677">677</a>
+<a href="#678" id="678">678</a>
+<a href="#679" id="679">679</a>
+<a href="#680" id="680">680</a>
+<a href="#681" id="681">681</a>
+<a href="#682" id="682">682</a>
+<a href="#683" id="683">683</a>
+<a href="#684" id="684">684</a>
+<a href="#685" id="685">685</a>
+<a href="#686" id="686">686</a>
+<a href="#687" id="687">687</a>
+<a href="#688" id="688">688</a>
+<a href="#689" id="689">689</a>
+<a href="#690" id="690">690</a>
+<a href="#691" id="691">691</a>
+<a href="#692" id="692">692</a>
+<a href="#693" id="693">693</a>
+<a href="#694" id="694">694</a>
+<a href="#695" id="695">695</a>
+<a href="#696" id="696">696</a>
+<a href="#697" id="697">697</a>
+<a href="#698" id="698">698</a>
+<a href="#699" id="699">699</a>
+<a href="#700" id="700">700</a>
+<a href="#701" id="701">701</a>
+<a href="#702" id="702">702</a>
+<a href="#703" id="703">703</a>
+<a href="#704" id="704">704</a>
+<a href="#705" id="705">705</a>
+<a href="#706" id="706">706</a>
+<a href="#707" id="707">707</a>
+<a href="#708" id="708">708</a>
+<a href="#709" id="709">709</a>
+<a href="#710" id="710">710</a>
+<a href="#711" id="711">711</a>
+<a href="#712" id="712">712</a>
+<a href="#713" id="713">713</a>
+<a href="#714" id="714">714</a>
+<a href="#715" id="715">715</a>
+<a href="#716" id="716">716</a>
+<a href="#717" id="717">717</a>
+<a href="#718" id="718">718</a>
+<a href="#719" id="719">719</a>
+<a href="#720" id="720">720</a>
+<a href="#721" id="721">721</a>
+<a href="#722" id="722">722</a>
+<a href="#723" id="723">723</a>
+<a href="#724" id="724">724</a>
+<a href="#725" id="725">725</a>
+<a href="#726" id="726">726</a>
+<a href="#727" id="727">727</a>
+<a href="#728" id="728">728</a>
+<a href="#729" id="729">729</a>
 </pre><pre class="rust"><code><span class="kw">use </span>serde::{Deserialize, Serialize};
 
 <span class="kw">use </span><span class="kw">crate</span>::model::prelude::<span class="kw-2">*</span>;
@@ -670,7 +744,7 @@
 }
 
 <span class="attr">#[derive(Serialize, Deserialize)]
-</span><span class="kw">struct </span>ActionRowTranslator {
+</span><span class="kw">struct </span>ActionRowJson {
     <span class="attr">#[serde(rename = <span class="string">&quot;type&quot;</span>)]
     </span>kind: u8,
     components: Vec&lt;serde_json::Value&gt;,
@@ -696,7 +770,7 @@
             <span class="self">Self</span>::InputText(x) =&gt; <span class="macro">vec!</span>[serde_json::to_value(x).map_err(S::Error::custom)<span class="question-mark">?</span>],
         };
 
-        ActionRowTranslator {
+        ActionRowJson {
             kind: <span class="number">1</span>,
             components,
         }
@@ -708,13 +782,13 @@
     <span class="kw">fn </span>deserialize&lt;D: serde::Deserializer&lt;<span class="lifetime">&#39;de</span>&gt;&gt;(deserializer: D) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, D::Error&gt; {
         <span class="kw">use </span>serde::de::Error <span class="kw">as _</span>;
 
-        <span class="kw">let </span>ActionRowTranslator {
+        <span class="kw">let </span>ActionRowJson {
             kind,
             components,
-        } = ActionRowTranslator::deserialize(deserializer)<span class="question-mark">?</span>;
+        } = ActionRowJson::deserialize(deserializer)<span class="question-mark">?</span>;
 
         <span class="kw">if </span>kind != <span class="number">1 </span>{
-            <span class="kw">return </span><span class="prelude-val">Err</span>(D::Error::custom(<span class="string">&quot;expected action row type 1&quot;</span>));
+            <span class="kw">return </span><span class="prelude-val">Err</span>(D::Error::custom(<span class="string">&quot;expected action row to be of type 1&quot;</span>));
         }
 
         <span class="comment">// A `Buttons` variant could contain 0 buttons internally, which is why
@@ -859,18 +933,18 @@
     Channel { channel_types: <span class="prelude-ty">Option</span>&lt;Vec&lt;ChannelType&gt;&gt; },
 }
 
+<span class="attr">#[derive(Serialize, Deserialize)]
+</span><span class="kw">struct </span>CreateSelectMenuKindJson {
+    <span class="attr">#[serde(rename = <span class="string">&quot;type&quot;</span>)]
+    </span>kind: u8,
+    options: <span class="prelude-ty">Option</span>&lt;Vec&lt;CreateSelectMenuOption&gt;&gt;,
+    channel_types: <span class="prelude-ty">Option</span>&lt;Vec&lt;ChannelType&gt;&gt;,
+}
+
 <span class="kw">impl </span>Serialize <span class="kw">for </span>CreateSelectMenuKind {
     <span class="kw">fn </span>serialize&lt;S: serde::Serializer&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, serializer: S) -&gt; <span class="prelude-ty">Result</span>&lt;S::Ok, S::Error&gt; {
-        <span class="attr">#[derive(Serialize)]
-        </span><span class="kw">struct </span>Json&lt;<span class="lifetime">&#39;a</span>&gt; {
-            <span class="attr">#[serde(rename = <span class="string">&quot;type&quot;</span>)]
-            </span>kind: u8,
-            options: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">&#39;a </span>[CreateSelectMenuOption]&gt;,
-            channel_types: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">&#39;a </span>[ChannelType]&gt;,
-        }
-
         <span class="attr">#[rustfmt::skip]
-        </span><span class="kw">let </span>json = Json {
+        </span><span class="kw">let </span>json = CreateSelectMenuKindJson {
             kind: <span class="kw">match </span><span class="self">self </span>{
                 <span class="self">Self</span>::String { .. } =&gt; <span class="number">3</span>,
                 <span class="self">Self</span>::User { .. } =&gt; <span class="number">5</span>,
@@ -879,11 +953,11 @@
                 <span class="self">Self</span>::Channel { .. } =&gt; <span class="number">8</span>,
             },
             options: <span class="kw">match </span><span class="self">self </span>{
-                <span class="self">Self</span>::String { options } =&gt; <span class="prelude-val">Some</span>(options),
+                <span class="self">Self</span>::String { options } =&gt; <span class="prelude-val">Some</span>(options.to_vec()),
                 <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
             },
                 channel_types: <span class="kw">match </span><span class="self">self </span>{
-                <span class="self">Self</span>::Channel { channel_types } =&gt; channel_types.as_deref(),
+                <span class="self">Self</span>::Channel { channel_types } =&gt; channel_types.to_owned(),
                 <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
             },
         };
@@ -892,18 +966,9 @@
     }
 }
 
-<span class="comment">// Impl deserialize for CreateSelectMenuKind
-</span><span class="kw">impl</span>&lt;<span class="lifetime">&#39;de</span>&gt; Deserialize&lt;<span class="lifetime">&#39;de</span>&gt; <span class="kw">for </span>CreateSelectMenuKind {
+<span class="kw">impl</span>&lt;<span class="lifetime">&#39;de</span>&gt; Deserialize&lt;<span class="lifetime">&#39;de</span>&gt; <span class="kw">for </span>CreateSelectMenuKind {
     <span class="kw">fn </span>deserialize&lt;D: serde::Deserializer&lt;<span class="lifetime">&#39;de</span>&gt;&gt;(deserializer: D) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, D::Error&gt; {
-        <span class="attr">#[derive(Deserialize)]
-        </span><span class="kw">struct </span>Json {
-            <span class="attr">#[serde(rename = <span class="string">&quot;type&quot;</span>)]
-            </span>kind: u8,
-            options: <span class="prelude-ty">Option</span>&lt;Vec&lt;CreateSelectMenuOption&gt;&gt;,
-            channel_types: <span class="prelude-ty">Option</span>&lt;Vec&lt;ChannelType&gt;&gt;,
-        }
-
-        <span class="kw">let </span>json = Json::deserialize(deserializer)<span class="question-mark">?</span>;
+        <span class="kw">let </span>json = CreateSelectMenuKindJson::deserialize(deserializer)<span class="question-mark">?</span>;
 
         <span class="prelude-val">Ok</span>(<span class="kw">match </span>json.kind {
             <span class="number">3 </span>=&gt; <span class="self">Self</span>::String {
@@ -1146,15 +1211,7 @@
 
 <span class="attr">#[cfg(test)]
 </span><span class="kw">mod </span>test {
-    <span class="kw">use </span><span class="kw">crate</span>::all::{
-        ButtonStyle,
-        CreateActionRow,
-        CreateButton,
-        CreateInputText,
-        CreateSelectMenu,
-        CreateSelectMenuKind,
-        InputTextStyle,
-    };
+    <span class="kw">use </span><span class="kw">crate</span>::all::<span class="kw-2">*</span>;
     <span class="kw">use </span><span class="kw">crate</span>::json::{assert_json, json};
 
     <span class="attr">#[test]
@@ -1232,6 +1289,40 @@
     }
 
     <span class="attr">#[test]
+    </span><span class="doccomment">/// Test deserializing an empty action row. This should error.
+    </span><span class="kw">fn </span>test_deserialize_empty_create_action_row() {
+        <span class="kw">let </span>action_row = CreateActionRow::Buttons(<span class="macro">vec!</span>[]);
+
+        <span class="kw">let </span>serialized_action_row: String = serde_json::to_string(<span class="kw-2">&amp;</span>action_row).unwrap();
+
+        <span class="kw">let </span>deserized_action_row: <span class="prelude-ty">Result</span>&lt;CreateActionRow, <span class="kw">_</span>&gt; =
+            serde_json::from_str(<span class="kw-2">&amp;</span>serialized_action_row);
+
+        <span class="macro">assert!</span>(deserized_action_row.is_err());
+
+        <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = deserized_action_row {
+            <span class="macro">assert_eq!</span>(e.to_string(), <span class="string">&quot;expected at least one component&quot;</span>);
+        }
+    }
+
+    <span class="attr">#[test]
+    </span><span class="doccomment">/// Test deserializing when the kind is no 1. This should error.
+    </span><span class="kw">fn </span>test_deserialize_invalid_kind_create_action_row() {
+        <span class="kw">let </span>action_row = CreateActionRow::Buttons(<span class="macro">vec!</span>[CreateButton::new(<span class="string">&quot;button_id_1&quot;</span>)]);
+
+        <span class="kw">let </span>serialized_action_row: String = serde_json::to_string(<span class="kw-2">&amp;</span>action_row).unwrap();
+
+        <span class="kw">let </span>deserized_action_row: <span class="prelude-ty">Result</span>&lt;CreateActionRow, <span class="kw">_</span>&gt; =
+            serde_json::from_str(<span class="kw-2">&amp;</span>serialized_action_row.replace(<span class="string">&quot;1&quot;</span>, <span class="string">&quot;2&quot;</span>));
+
+        <span class="macro">assert!</span>(deserized_action_row.is_err());
+
+        <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = deserized_action_row {
+            <span class="macro">assert_eq!</span>(e.to_string(), <span class="string">&quot;expected action row to be of type 1&quot;</span>);
+        }
+    }
+
+    <span class="attr">#[test]
     </span><span class="doccomment">/// Make sure that the `CreateActionRow` enum can be deserialized properly
     /// into the button variant.
     </span><span class="kw">fn </span>test_deserialize_button_create_action_row() {
@@ -1305,8 +1396,65 @@
         }
     }
 
-    <span class="comment">// #[test]
-    // /// Test deserializing an empty action row. This should error.
-</span>}
+    <span class="attr">#[test]
+    </span><span class="doccomment">/// Make sure that the `CreateActionRow` enum can be deserialized properly
+    /// into the input text variant.
+    </span><span class="kw">fn </span>test_deserialize_input_text_create_action_row() {
+        <span class="kw">let </span>action_row = CreateActionRow::InputText(CreateInputText::new(
+            InputTextStyle::Short,
+            <span class="string">&quot;input_text_label&quot;</span>,
+            <span class="string">&quot;input_text_id&quot;</span>,
+        ));
+
+        assert_json(
+            <span class="kw-2">&amp;</span>action_row,
+            <span class="macro">json!</span>({
+                <span class="string">&quot;type&quot;</span>: <span class="number">1</span>,
+                <span class="string">&quot;components&quot;</span>: [
+                    {
+                        <span class="string">&quot;custom_id&quot;</span>: <span class="string">&quot;input_text_id&quot;</span>,
+                        <span class="string">&quot;label&quot;</span>: <span class="string">&quot;input_text_label&quot;</span>,
+                        <span class="string">&quot;style&quot;</span>: <span class="number">1</span>,
+                        <span class="string">&quot;type&quot;</span>: <span class="number">4</span>,
+                    },
+                ],
+            }),
+        );
+
+        <span class="kw">let </span>serialized_action_row: String = serde_json::to_string(<span class="kw-2">&amp;</span>action_row).unwrap();
+
+        <span class="kw">let </span>deserized_action_row: CreateActionRow =
+            serde_json::from_str(<span class="kw-2">&amp;</span>serialized_action_row).unwrap();
+
+        <span class="comment">// Make sure it&#39;s a input text variant
+        </span><span class="kw">if let </span>CreateActionRow::InputText(input_text) = deserized_action_row {
+            <span class="macro">assert_eq!</span>(input_text.custom_id, <span class="string">&quot;input_text_id&quot;</span>);
+        } <span class="kw">else </span>{
+            <span class="macro">panic!</span>(<span class="string">&quot;Deserialized action row is not a input text variant&quot;</span>);
+        }
+    }
+
+    <span class="attr">#[test]
+    </span><span class="doccomment">/// Test serializing a CreateSelectMenuKind
+    </span><span class="kw">fn </span>test_serialize_create_select_menu_kind() {
+        <span class="kw">let </span>kind = CreateSelectMenuKind::Channel {
+            channel_types: <span class="prelude-val">Some</span>(<span class="macro">vec!</span>[
+                ChannelType::Text,
+                ChannelType::Voice,
+                ChannelType::Category,
+                ChannelType::News,
+            ]),
+        };
+
+        assert_json(
+            <span class="kw-2">&amp;</span>kind,
+            <span class="macro">json!</span>({
+                <span class="string">&quot;channel_types&quot;</span>: [<span class="number">0</span>, <span class="number">2</span>, <span class="number">4</span>, <span class="number">5</span>],
+                <span class="string">&quot;options&quot;</span>: null,
+                <span class="string">&quot;type&quot;</span>: <span class="number">8</span>,
+            }),
+        );
+    }
+}
 </code></pre></div>
-</section></main><div id="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="serenity" data-themes="" data-resource-suffix="" data-rustdoc-version="1.68.0-nightly (4781233a7 2023-01-16)" data-search-js="search-181581080540673f.js" data-settings-js="settings-a2afdefbb7c817f1.js" data-settings-css="settings-84508a86fe805444.css" ></div></body></html>
+</section></main><div id="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="serenity" data-themes="" data-resource-suffix="" data-rustdoc-version="1.68.0-nightly (3984bc583 2023-01-17)" data-search-js="search-181581080540673f.js" data-settings-js="settings-a2afdefbb7c817f1.js" data-settings-css="settings-84508a86fe805444.css" ></div></body></html>
