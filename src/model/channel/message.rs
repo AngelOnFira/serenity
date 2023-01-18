@@ -1,76 +1,61 @@
 //! Models relating to Discord channels.
 
+#[cfg(feature = "model")]
 use std::fmt::Display;
 #[cfg(all(feature = "cache", feature = "model"))]
 use std::fmt::Write;
-#[cfg(feature = "model")]
-use std::result::Result as StdResult;
-
-#[cfg(feature = "model")]
-use bitflags::__impl_bitflags;
-use chrono::{DateTime, Utc};
-#[cfg(feature = "model")]
-use serde::{
-    de::{Deserialize, Deserializer},
-    ser::{Serialize, Serializer},
-};
-use serde_json::Value;
 
 #[cfg(all(feature = "model", feature = "utils"))]
-use crate::builder::{CreateEmbed, EditMessage};
+use crate::builder::{CreateAllowedMentions, CreateMessage, EditMessage};
 #[cfg(all(feature = "cache", feature = "model"))]
-use crate::cache::Cache;
+use crate::cache::{Cache, GuildRef};
 #[cfg(feature = "collector")]
 use crate::client::bridge::gateway::ShardMessenger;
-#[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-use crate::collector::{CollectComponentInteraction, ComponentInteractionCollectorBuilder};
 #[cfg(feature = "collector")]
-use crate::collector::{CollectReaction, ReactionCollectorBuilder};
+use crate::collector::{
+    ComponentInteractionCollector,
+    ModalInteractionCollector,
+    ReactionCollector,
+};
+#[cfg(feature = "model")]
+use crate::constants;
 #[cfg(feature = "model")]
 use crate::http::{CacheHttp, Http};
-#[cfg(feature = "unstable_discord_api")]
-use crate::model::interactions::{message_component::ActionRow, MessageInteraction};
+use crate::model::application::{ActionRow, MessageInteraction};
 use crate::model::prelude::*;
 #[cfg(feature = "model")]
-use crate::model::utils::U64Visitor;
-#[cfg(feature = "model")]
-use crate::{
-    constants,
-    model::id::{ApplicationId, ChannelId, GuildId, MessageId},
-};
+use crate::utils;
 
 /// A representation of a message over a guild's text channel, a group, or a
 /// private channel.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/channel#message-object) with some
+/// [extra fields](https://discord.com/developers/docs/topics/gateway-events#message-create-message-create-extra-fields).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct Message {
     /// The unique Id of the message. Can be used to calculate the creation date
     /// of the message.
     pub id: MessageId,
-    /// An vector of the files attached to a message.
-    pub attachments: Vec<Attachment>,
-    /// The user that sent the message.
-    pub author: User,
     /// The Id of the [`Channel`] that the message was sent to.
     pub channel_id: ChannelId,
+    /// The user that sent the message.
+    pub author: User,
     /// The content of the message.
     pub content: String,
+    /// Initial message creation timestamp, calculated from its Id.
+    pub timestamp: Timestamp,
     /// The timestamp of the last time the message was updated, if it was.
-    pub edited_timestamp: Option<DateTime<Utc>>,
-    /// Array of embeds sent with the message.
-    pub embeds: Vec<Embed>,
-    /// The Id of the [`Guild`] that the message was sent in. This value will
-    /// only be present if this message was received over the gateway.
-    pub guild_id: Option<GuildId>,
-    /// Indicator of the type of message this is, i.e. whether it is a regular
-    /// message or a system message.
-    #[serde(rename = "type")]
-    pub kind: MessageType,
-    /// A partial amount of data about the user's member data, if this message
-    /// was sent in a guild.
-    pub member: Option<PartialMember>,
+    pub edited_timestamp: Option<Timestamp>,
+    /// Indicator of whether the command is to be played back via
+    /// text-to-speech.
+    ///
+    /// In the client, this is done via the `/tts` slash command.
+    pub tts: bool,
     /// Indicator of whether the message mentions everyone.
     pub mention_everyone: bool,
+    /// Array of users mentioned in the message.
+    pub mentions: Vec<User>,
     /// Array of [`Role`]s' Ids mentioned in the message.
     pub mention_roles: Vec<RoleId>,
     /// Channels specifically mentioned in this message.
@@ -90,49 +75,61 @@ pub struct Message {
     /// [discord-docs]: https://discord.com/developers/docs/resources/channel#message-object
     #[serde(default = "Vec::new")]
     pub mention_channels: Vec<ChannelMention>,
-    /// Array of users mentioned in the message.
-    pub mentions: Vec<User>,
-    /// Non-repeating number used for ensuring message order.
-    #[serde(default)]
-    pub nonce: Value,
-    /// Indicator of whether the message is pinned.
-    pub pinned: bool,
+    /// An vector of the files attached to a message.
+    pub attachments: Vec<Attachment>,
+    /// Array of embeds sent with the message.
+    pub embeds: Vec<Embed>,
     /// Array of reactions performed on the message.
     #[serde(default)]
     pub reactions: Vec<MessageReaction>,
-    /// Initial message creation timestamp, calculated from its Id.
-    pub timestamp: DateTime<Utc>,
-    /// Indicator of whether the command is to be played back via
-    /// text-to-speech.
-    ///
-    /// In the client, this is done via the `/tts` slash command.
-    pub tts: bool,
+    /// Non-repeating number used for ensuring message order.
+    #[serde(default)]
+    pub nonce: Option<Nonce>,
+    /// Indicator of whether the message is pinned.
+    pub pinned: bool,
     /// The Id of the webhook that sent this message, if one did.
     pub webhook_id: Option<WebhookId>,
+    /// Indicator of the type of message this is, i.e. whether it is a regular
+    /// message or a system message.
+    #[serde(rename = "type")]
+    pub kind: MessageType,
     /// Sent with Rich Presence-related chat embeds.
     pub activity: Option<MessageActivity>,
     /// Sent with Rich Presence-related chat embeds.
     pub application: Option<MessageApplication>,
+    /// If the message is an Interaction or application-owned webhook, this is the id of the
+    /// application.
+    pub application_id: Option<ApplicationId>,
     /// Reference data sent with crossposted messages.
     pub message_reference: Option<MessageReference>,
     /// Bit flags describing extra features of the message.
     pub flags: Option<MessageFlags>,
-    /// Array of stickers sent with the message.
-    #[serde(default)]
-    pub stickers: Vec<Sticker>,
     /// The message that was replied to using this message.
-    pub referenced_message: Option<Box<Message>>, // Boxed to avoid recusion
+    pub referenced_message: Option<Box<Message>>, // Boxed to avoid recursion
     /// Sent if the message is a response to an [`Interaction`].
     ///
-    /// [`Interaction`]: crate::model::interactions::Interaction
-    #[cfg(feature = "unstable_discord_api")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_discord_api")))]
-    pub interaction: Option<MessageInteraction>,
+    /// [`Interaction`]: crate::model::application::Interaction
+    pub interaction: Option<Box<MessageInteraction>>,
+    /// The thread that was started from this message, includes thread member object.
+    pub thread: Option<GuildChannel>,
     /// The components of this message
-    #[cfg(feature = "unstable_discord_api")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_discord_api")))]
     #[serde(default)]
     pub components: Vec<ActionRow>,
+    /// Array of message sticker item objects.
+    #[serde(default)]
+    pub sticker_items: Vec<StickerItem>,
+    // Field omitted: stickers (it's deprecated by Discord)
+    /// The Id of the [`Guild`] that the message was sent in. This value will
+    /// only be present if this message was received over the gateway, therefore **do not use this
+    /// to check if message is in DMs**, it is not a reliable method.
+    // TODO: maybe introduce an `enum MessageLocation { Dm, Guild(GuildId) }` and store
+    // `Option<MessageLocation` here. Instead of None being ambiguous (is it in DMs? Or do we just
+    // not know because HTTP retrieved Messages don't have guild ID?), we'd set
+    // Some(MessageLocation::Dm) in gateway and None in HTTP.
+    pub guild_id: Option<GuildId>,
+    /// A partial amount of data about the user's member data, if this message
+    /// was sent in a guild.
+    pub member: Option<Box<PartialMember>>,
 }
 
 #[cfg(feature = "model")]
@@ -141,7 +138,7 @@ impl Message {
     ///
     /// Requires either to be the message author or to have manage [Manage Messages] permissions on this channel.
     ///
-    /// **Note**: Only available on announcements channels.
+    /// **Note**: Only available on news channels.
     ///
     /// # Errors
     ///
@@ -151,21 +148,20 @@ impl Message {
     ///
     /// Returns a [`ModelError::MessageAlreadyCrossposted`] if the message has already been crossposted.
     ///
-    /// Returns a [`ModelError`::CannotCrosspostMessage`] if the message cannot be crossposted.
+    /// Returns a [`ModelError::CannotCrosspostMessage`] if the message cannot be crossposted.
     ///
     /// [Manage Messages]: Permissions::MANAGE_MESSAGES
     pub async fn crosspost(&self, cache_http: impl CacheHttp) -> Result<Message> {
         #[cfg(feature = "cache")]
         {
             if let Some(cache) = cache_http.cache() {
-                if self.author.id != cache.current_user_id().await && self.guild_id.is_some() {
+                if self.author.id != cache.current_user().id && self.guild_id.is_some() {
                     utils::user_has_perms_cache(
                         cache,
                         self.channel_id,
                         self.guild_id,
                         Permissions::MANAGE_MESSAGES,
-                    )
-                    .await?;
+                    )?;
                 }
             }
         }
@@ -180,23 +176,28 @@ impl Message {
             }
         }
 
-        self.channel_id.crosspost(cache_http.http(), self.id.0).await
+        self.channel_id.crosspost(cache_http.http(), self.id).await
     }
 
-    /// Retrieves the related channel located in the cache.
+    /// First attempts to find a [`Channel`] by its Id in the cache,
+    /// upon failure requests it via the REST API.
     ///
-    /// Returns [`None`] if the channel is not in the cache.
-    #[cfg(feature = "cache")]
+    /// **Note**: If the `cache`-feature is enabled permissions will be checked and upon
+    /// owning the required permissions the HTTP-request will be issued.
+    ///
+    /// # Errors
+    ///
+    /// Can return an error if the HTTP request fails.
     #[inline]
-    pub async fn channel(&self, cache: impl AsRef<Cache>) -> Option<Channel> {
-        cache.as_ref().channel(self.channel_id).await
+    pub async fn channel(&self, cache_http: impl CacheHttp) -> Result<Channel> {
+        self.channel_id.to_channel(cache_http).await
     }
 
     /// A util function for determining whether this message was sent by someone else, or the
     /// bot.
-    #[cfg(all(feature = "cache", feature = "utils"))]
-    pub async fn is_own(&self, cache: impl AsRef<Cache>) -> bool {
-        self.author.id == cache.as_ref().current_user().await.id
+    #[cfg(feature = "cache")]
+    pub fn is_own(&self, cache: impl AsRef<Cache>) -> bool {
+        self.author.id == cache.as_ref().current_user().id
     }
 
     /// Deletes the message.
@@ -215,23 +216,18 @@ impl Message {
         #[cfg(feature = "cache")]
         {
             if let Some(cache) = cache_http.cache() {
-                if self.author.id != cache.current_user_id().await {
-                    if self.is_private() {
-                        return Err(Error::Model(ModelError::NotAuthor));
-                    } else {
-                        utils::user_has_perms_cache(
-                            cache,
-                            self.channel_id,
-                            self.guild_id,
-                            Permissions::MANAGE_MESSAGES,
-                        )
-                        .await?;
-                    }
+                if self.author.id != cache.current_user().id {
+                    utils::user_has_perms_cache(
+                        cache,
+                        self.channel_id,
+                        self.guild_id,
+                        Permissions::MANAGE_MESSAGES,
+                    )?;
                 }
             }
         }
 
-        self.channel_id.delete_message(&cache_http.http(), self.id).await
+        self.channel_id.delete_message(cache_http.http(), self.id).await
     }
 
     /// Deletes all of the [`Reaction`]s associated with the message.
@@ -254,12 +250,11 @@ impl Message {
                     self.channel_id,
                     self.guild_id,
                     Permissions::MANAGE_MESSAGES,
-                )
-                .await?;
+                )?;
             }
         }
 
-        cache_http.http().as_ref().delete_message_reactions(self.channel_id.0, self.id.0).await
+        cache_http.http().as_ref().delete_message_reactions(self.channel_id, self.id).await
     }
 
     /// Deletes all of the [`Reaction`]s of a given emoji associated with the message.
@@ -286,107 +281,73 @@ impl Message {
                     self.channel_id,
                     self.guild_id,
                     Permissions::MANAGE_MESSAGES,
-                )
-                .await?;
+                )?;
             }
         }
 
         cache_http
             .http()
             .as_ref()
-            .delete_message_reaction_emoji(self.channel_id.0, self.id.0, &reaction_type.into())
+            .delete_message_reaction_emoji(self.channel_id, self.id, &reaction_type.into())
             .await
     }
 
     /// Edits this message, replacing the original content with new content.
     ///
-    /// Message editing preserves all unchanged message data.
+    /// Message editing preserves all unchanged message data, with some exceptions for embeds and
+    /// attachments.
     ///
-    /// Refer to the documentation for [`EditMessage`] for more information
-    /// regarding message restrictions and requirements.
+    /// **Note**: In most cases requires that the current user be the author of the message.
     ///
-    /// **Note**: Requires that the current user be the author of the message.
+    /// Refer to the documentation for [`EditMessage`] for information regarding content
+    /// restrictions and requirements.
     ///
     /// # Examples
     ///
     /// Edit a message with new content:
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// # use serenity::builder::EditMessage;
+    /// # use serenity::model::id::{ChannelId, MessageId};
+    /// # use serenity::http::Http;
+    /// #
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let http = Http::new("token");
+    /// # let mut message = ChannelId::new(7).message(&http, MessageId::new(8)).await?;
     /// // assuming a `message` has already been bound
-    ///
-    /// message.edit(&context, |m| m.content("new content"));
+    /// let builder = EditMessage::new().content("new content");
+    /// message.edit(&http, builder).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// # Errors
     ///
-    /// If the `cache` is enabled, returns a [`ModelError::InvalidUser`] if the
-    /// current user is not the author.
+    /// If the `cache` is enabled, returns a [`ModelError::InvalidUser`] if the current user is not
+    /// the author. Otherwise returns [`Error::Http`] if the user lacks permission, as well as if
+    /// invalid data is given.
     ///
-    /// Returns a [`ModelError::MessageTooLong`] if the content of the message
-    /// is over [`the limit`], containing the number of unicode code points
-    /// over the limit.
+    /// Returns a [`ModelError::MessageTooLong`] if the message contents are too long.
     ///
-    /// [`EditMessage`]: crate::builder::EditMessage
-    /// [`the limit`]: crate::builder::EditMessage::content
-    #[cfg(feature = "utils")]
-    pub async fn edit<F>(&mut self, cache_http: impl CacheHttp, f: F) -> Result<()>
-    where
-        F: FnOnce(&mut EditMessage) -> &mut EditMessage,
-    {
+    /// [Manage Messages]: Permissions::MANAGE_MESSAGES
+    pub async fn edit(&mut self, cache_http: impl CacheHttp, builder: EditMessage) -> Result<()> {
         #[cfg(feature = "cache")]
         {
             if let Some(cache) = cache_http.cache() {
-                if self.author.id != cache.current_user_id().await {
+                if self.author.id != cache.current_user().id {
                     return Err(Error::Model(ModelError::InvalidUser));
                 }
             }
         }
 
-        let mut builder = EditMessage::default();
-
-        if !self.content.is_empty() {
-            builder.content(&self.content);
-        }
-
-        let embeds: Vec<_> = self.embeds.iter().map(|e| CreateEmbed::from(e.clone())).collect();
-        builder.set_embeds(embeds);
-
-        f(&mut builder);
-
-        let map = crate::utils::hashmap_to_json_map(builder.0);
-
-        *self = cache_http
-            .http()
-            .edit_message(self.channel_id.0, self.id.0, &Value::Object(map))
-            .await?;
-
+        *self = builder.execute(cache_http.http(), self.channel_id, self.id).await?;
         Ok(())
-    }
-
-    pub(crate) fn transform_content(&mut self) {
-        match self.kind {
-            MessageType::PinsAdd => {
-                self.content =
-                    format!("{} pinned a message to this channel. See all the pins.", self.author);
-            },
-            MessageType::MemberJoin => {
-                let sec = self.timestamp.timestamp() as usize;
-                let chosen = constants::JOIN_MESSAGES[sec % constants::JOIN_MESSAGES.len()];
-
-                self.content = if chosen.contains("$user") {
-                    chosen.replace("$user", &self.author.mention().to_string())
-                } else {
-                    chosen.to_string()
-                };
-            },
-            _ => {},
-        }
     }
 
     /// Returns message content, but with user and role mentions replaced with
     /// names and everyone/here mentions cancelled.
     #[cfg(feature = "cache")]
-    pub async fn content_safe(&self, cache: impl AsRef<Cache>) -> String {
+    pub fn content_safe(&self, cache: impl AsRef<Cache>) -> String {
         let mut result = self.content.clone();
 
         // First replace all user mentions.
@@ -395,9 +356,7 @@ impl Message {
             at_distinct.push('@');
             at_distinct.push_str(&u.name);
             at_distinct.push('#');
-
-            #[allow(clippy::let_underscore_must_use)]
-            let _ = write!(at_distinct, "{:04}", u.discriminator);
+            write!(at_distinct, "{:04}", u.discriminator).unwrap();
 
             let mut m = u.mention().to_string();
             // Check whether we're replacing a nickname mention or a normal mention.
@@ -413,7 +372,7 @@ impl Message {
         for id in &self.mention_roles {
             let mention = id.mention().to_string();
 
-            if let Some(role) = id.to_role_cached(&cache).await {
+            if let Some(role) = id.to_role_cached(&cache) {
                 result = result.replace(&mention, &format!("@{}", role.name));
             } else {
                 result = result.replace(&mention, "@deleted-role");
@@ -436,6 +395,10 @@ impl Message {
     ///
     /// **Note**: Requires the [Read Message History] permission.
     ///
+    /// **Note**: If the passed reaction_type is a custom guild emoji, it must contain the name. So,
+    /// [`Emoji`] or [`EmojiIdentifier`] will always work, [`ReactionType`] only if
+    /// [`ReactionType::Custom::name`] is Some, and **[`EmojiId`] will never work**.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Http`] if the current user lacks permission.
@@ -449,7 +412,7 @@ impl Message {
         limit: Option<u8>,
         after: impl Into<Option<UserId>>,
     ) -> Result<Vec<User>> {
-        self.channel_id.reaction_users(&http, self.id, reaction_type, limit, after).await
+        self.channel_id.reaction_users(http, self.id, reaction_type, limit, after).await
     }
 
     /// Returns the associated [`Guild`] for the message if one is in the cache.
@@ -459,32 +422,18 @@ impl Message {
     ///
     /// Requires the `cache` feature be enabled.
     #[cfg(feature = "cache")]
-    pub async fn guild(&self, cache: impl AsRef<Cache>) -> Option<Guild> {
-        cache.as_ref().guild(self.guild_id?).await
-    }
-
-    /// Returns a field to the [`Guild`] for the message if one is in the cache.
-    /// The field can be selected via the `field_accessor`.
-    ///
-    /// Returns [`None`] if the guild's ID could not be found via [`Self::guild_id`] or
-    /// if the Guild itself is not cached.
-    ///
-    /// Requires the `cache` feature be enabled.
-    #[cfg(feature = "cache")]
-    pub async fn guild_field<Ret, Fun>(
-        &self,
-        cache: impl AsRef<Cache>,
-        field_accessor: Fun,
-    ) -> Option<Ret>
-    where
-        Ret: Clone,
-        Fun: FnOnce(&Guild) -> Ret,
-    {
-        cache.as_ref().guild_field(self.guild_id?, field_accessor).await
+    pub fn guild<'a>(&self, cache: &'a Cache) -> Option<GuildRef<'a>> {
+        cache.guild(self.guild_id?)
     }
 
     /// True if message was sent using direct messages.
+    ///
+    /// **Only use this for messages from the
+    /// gateway (event handler)!** Not for returned Message objects from HTTP requests, like
+    /// [`ChannelId::send_message`], because [`Self::guild_id`] is never set for those, which this
+    /// method relies on.
     #[inline]
+    #[must_use]
     pub fn is_private(&self) -> bool {
         self.guild_id.is_none()
     }
@@ -499,39 +448,19 @@ impl Message {
     ///
     /// [`ModelError::ItemMissing`] is returned if [`Self::guild_id`] is [`None`].
     pub async fn member(&self, cache_http: impl CacheHttp) -> Result<Member> {
-        let guild_id = match self.guild_id {
-            Some(guild_id) => guild_id,
-            None => return Err(Error::Model(ModelError::ItemMissing)),
-        };
-
-        #[cfg(feature = "cache")]
-        {
-            if let Some(cache) = cache_http.cache() {
-                if let Some(member) = cache.member(guild_id, self.author.id).await {
-                    return Ok(member);
-                }
-            }
+        match self.guild_id {
+            Some(guild_id) => guild_id.member(cache_http, self.author.id).await,
+            None => Err(Error::Model(ModelError::ItemMissing)),
         }
-
-        cache_http.http().get_member(guild_id.0, self.author.id.0).await
     }
 
-    /// Checks the length of a string to ensure that it is within Discord's
-    /// maximum message length limit.
+    /// Checks the length of a message to ensure that it is within Discord's maximum length limit.
     ///
-    /// Returns [`None`] if the message is within the limit, otherwise returns
-    /// [`Some`] with an inner value of how many unicode code points the message
-    /// is over.
+    /// Returns [`None`] if the message is within the limit, otherwise returns [`Some`] with an
+    /// inner value of how many unicode code points the message is over.
+    #[must_use]
     pub fn overflow_length(content: &str) -> Option<usize> {
-        // Check if the content is over the maximum number of unicode code
-        // points.
-        let count = content.chars().count();
-
-        if count > constants::MESSAGE_CODE_LIMIT {
-            Some(count - constants::MESSAGE_CODE_LIMIT)
-        } else {
-            None
-        }
+        utils::check_overflow(content.chars().count(), constants::MESSAGE_CODE_LIMIT).err()
     }
 
     /// Pins this message to its channel.
@@ -555,13 +484,12 @@ impl Message {
                         self.channel_id,
                         self.guild_id,
                         Permissions::MANAGE_MESSAGES,
-                    )
-                    .await?;
+                    )?;
                 }
             }
         }
 
-        self.channel_id.pin(cache_http.http(), self.id.0).await
+        self.channel_id.pin(cache_http.http(), self.id).await
     }
 
     /// React to the message with a custom [`Emoji`] or unicode character.
@@ -582,15 +510,15 @@ impl Message {
         cache_http: impl CacheHttp,
         reaction_type: impl Into<ReactionType>,
     ) -> Result<Reaction> {
-        self._react(cache_http, &reaction_type.into()).await
+        self._react(cache_http, reaction_type.into()).await
     }
 
     async fn _react(
         &self,
         cache_http: impl CacheHttp,
-        reaction_type: &ReactionType,
+        reaction_type: ReactionType,
     ) -> Result<Reaction> {
-        #[allow(unused_mut)]
+        #[cfg_attr(not(feature = "cache"), allow(unused_mut))]
         let mut user_id = None;
 
         #[cfg(feature = "cache")]
@@ -602,23 +530,22 @@ impl Message {
                         self.channel_id,
                         self.guild_id,
                         Permissions::ADD_REACTIONS,
-                    )
-                    .await?;
+                    )?;
                 }
 
-                user_id = Some(cache.current_user().await.id);
+                user_id = Some(cache.current_user().id);
             }
         }
 
-        cache_http.http().create_reaction(self.channel_id.0, self.id.0, reaction_type).await?;
+        cache_http.http().create_reaction(self.channel_id, self.id, &reaction_type).await?;
 
         Ok(Reaction {
             channel_id: self.channel_id,
-            emoji: reaction_type.clone(),
+            emoji: reaction_type,
             message_id: self.id,
             user_id,
             guild_id: self.guild_id,
-            member: self.member.clone(),
+            member: self.member.as_deref().cloned(),
         })
     }
 
@@ -645,7 +572,7 @@ impl Message {
     pub async fn reply(
         &self,
         cache_http: impl CacheHttp,
-        content: impl Display,
+        content: impl Into<String>,
     ) -> Result<Message> {
         self._reply(cache_http, content, Some(false)).await
     }
@@ -671,7 +598,7 @@ impl Message {
     pub async fn reply_ping(
         &self,
         cache_http: impl CacheHttp,
-        content: impl Display,
+        content: impl Into<String>,
     ) -> Result<Message> {
         self._reply(cache_http, content, Some(true)).await
     }
@@ -702,14 +629,14 @@ impl Message {
         cache_http: impl CacheHttp,
         content: impl Display,
     ) -> Result<Message> {
-        self._reply(cache_http, format!("{} {}", self.author.mention(), content), None).await
+        self._reply(cache_http, format!("{} {content}", self.author.mention()), None).await
     }
 
     /// `inlined` decides whether this reply is inlined and whether it pings.
     async fn _reply(
         &self,
         cache_http: impl CacheHttp,
-        content: impl Display,
+        content: impl Into<String>,
         inlined: Option<bool>,
     ) -> Result<Message> {
         #[cfg(feature = "cache")]
@@ -721,73 +648,23 @@ impl Message {
                         self.channel_id,
                         self.guild_id,
                         Permissions::SEND_MESSAGES,
-                    )
-                    .await?;
+                    )?;
                 }
             }
         }
 
-        self.channel_id
-            .send_message(cache_http.http(), |builder| {
-                if let Some(ping_user) = inlined {
-                    builder.reference_message(self).allowed_mentions(|f| {
-                        f.replied_user(ping_user)
-                            // By providing allowed_mentions, Discord disabled _all_ pings by
-                            // default so we need to re-enable them
-                            .parse(crate::builder::ParseValue::Everyone)
-                            .parse(crate::builder::ParseValue::Users)
-                            .parse(crate::builder::ParseValue::Roles)
-                    });
-                }
-
-                builder.content(content)
-            })
-            .await
-    }
-
-    /// Delete all embeds in this message
-    /// **Note**: The logged in user must either be the author of the message or
-    /// have the [Manage Messages] permission.
-    ///
-    /// # Errors
-    ///
-    /// If the `cache` feature is enabled, then returns a
-    /// [`ModelError::InvalidPermissions`] if the current user does not have
-    /// the required permissions.
-    ///
-    /// Otherwise returns [`Error::Http`] if the current user lacks permission.
-    ///
-    /// [Manage Messages]: Permissions::MANAGE_MESSAGES
-    #[cfg(feature = "utils")]
-    pub async fn suppress_embeds(&mut self, cache_http: impl CacheHttp) -> Result<()> {
-        #[cfg(feature = "cache")]
-        {
-            if let Some(cache) = cache_http.cache() {
-                utils::user_has_perms_cache(
-                    cache,
-                    self.channel_id,
-                    self.guild_id,
-                    Permissions::MANAGE_MESSAGES,
-                )
-                .await?;
-
-                if self.author.id != cache.current_user_id().await {
-                    return Err(Error::Model(ModelError::NotAuthor));
-                }
-            }
+        let mut builder = CreateMessage::new().content(content);
+        if let Some(ping_user) = inlined {
+            let allowed_mentions = CreateAllowedMentions::new()
+                .replied_user(ping_user)
+                // By providing allowed_mentions, Discord disabled _all_ pings by default so we
+                // need to re-enable them
+                .everyone(true)
+                .all_users(true)
+                .all_roles(true);
+            builder = builder.reference_message(self).allowed_mentions(allowed_mentions);
         }
-
-        let mut suppress = EditMessage::default();
-        suppress.suppress_embeds(true);
-
-        let map = crate::utils::hashmap_to_json_map(suppress.0);
-
-        *self = cache_http
-            .http()
-            .edit_message(self.channel_id.0, self.id.0, &Value::Object(map))
-            .await?;
-
-        Ok(())
+        self.channel_id.send_message(cache_http, builder).await
     }
 
     /// Checks whether the message mentions passed [`UserId`].
@@ -799,6 +676,7 @@ impl Message {
 
     /// Checks whether the message mentions passed [`User`].
     #[inline]
+    #[must_use]
     pub fn mentions_user(&self, user: &User) -> bool {
         self.mentions_user_id(user.id)
     }
@@ -813,7 +691,7 @@ impl Message {
         #[cfg(feature = "cache")]
         {
             if let Some(cache) = cache_http.cache() {
-                return Ok(self.mentions_user_id(cache.user.read().await.id));
+                return Ok(self.mentions_user_id(cache.current_user().id));
             }
         }
 
@@ -842,13 +720,12 @@ impl Message {
                         self.channel_id,
                         self.guild_id,
                         Permissions::MANAGE_MESSAGES,
-                    )
-                    .await?;
+                    )?;
                 }
             }
         }
 
-        cache_http.http().unpin_message(self.channel_id.0, self.id.0).await
+        cache_http.http().unpin_message(self.channel_id, self.id, None).await
     }
 
     /// Tries to return author's nickname in the current channel's guild.
@@ -862,6 +739,7 @@ impl Message {
     /// Returns a link referencing this message. When clicked, users will jump to the message.
     /// The link will be valid for messages in either private channels or guilds.
     #[inline]
+    #[must_use]
     pub fn link(&self) -> String {
         self.id.link(self.channel_id, self.guild_id)
     }
@@ -875,116 +753,60 @@ impl Message {
         self.id.link_ensured(cache_http, self.channel_id, self.guild_id).await
     }
 
-    /// Await a single reaction on this message.
+    /// Returns a builder which can be awaited to obtain a reaction or stream of reactions on this message.
     #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub fn await_reaction<'a>(
-        &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> CollectReaction<'a> {
-        CollectReaction::new(shard_messenger).message_id(self.id.0)
+    pub fn await_reaction(&self, shard_messenger: impl AsRef<ShardMessenger>) -> ReactionCollector {
+        ReactionCollector::new(shard_messenger).message_id(self.id)
     }
 
-    /// Returns a stream builder which can be awaited to obtain a stream of reactions on this message.
+    /// Same as [`Self::await_reaction`].
     #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub fn await_reactions<'a>(
+    pub fn await_reactions(
         &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> ReactionCollectorBuilder<'a> {
-        ReactionCollectorBuilder::new(shard_messenger).message_id(self.id.0)
+        shard_messenger: impl AsRef<ShardMessenger>,
+    ) -> ReactionCollector {
+        self.await_reaction(shard_messenger)
     }
 
-    /// Await a single component interaction on this message.
-    #[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-    #[cfg_attr(docsrs, doc(cfg(all(feature = "unstable_discord_api", feature = "collector"))))]
-    pub fn await_component_interaction<'a>(
+    /// Returns a builder which can be awaited to obtain a single component interactions or a stream of component interactions on this message.
+    #[cfg(feature = "collector")]
+    pub fn await_component_interaction(
         &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> CollectComponentInteraction<'a> {
-        CollectComponentInteraction::new(shard_messenger).message_id(self.id.0)
+        shard_messenger: impl AsRef<ShardMessenger>,
+    ) -> ComponentInteractionCollector {
+        ComponentInteractionCollector::new(shard_messenger).message_id(self.id)
     }
 
-    /// Returns a stream builder which can be awaited to obtain a stream of component interactions on this message.
-    #[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-    #[cfg_attr(docsrs, doc(cfg(all(feature = "unstable_discord_api", feature = "collector"))))]
-    pub fn await_component_interactions<'a>(
+    /// Same as [`Self::await_component_interaction`].
+    #[cfg(feature = "collector")]
+    pub fn await_component_interactions(
         &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> ComponentInteractionCollectorBuilder<'a> {
-        ComponentInteractionCollectorBuilder::new(shard_messenger).message_id(self.id.0)
+        shard_messenger: impl AsRef<ShardMessenger>,
+    ) -> ComponentInteractionCollector {
+        self.await_component_interaction(shard_messenger)
+    }
+
+    /// Returns a builder which can be awaited to obtain a model submit interaction or stream of modal submit interactions on this message.
+    #[cfg(feature = "collector")]
+    pub fn await_modal_interaction(
+        &self,
+        shard_messenger: impl AsRef<ShardMessenger>,
+    ) -> ModalInteractionCollector {
+        ModalInteractionCollector::new(shard_messenger).message_id(self.id)
+    }
+
+    /// Same as [`Self::await_modal_interaction`].
+    #[cfg(feature = "collector")]
+    pub fn await_modal_interactions(
+        &self,
+        shard_messenger: impl AsRef<ShardMessenger>,
+    ) -> ModalInteractionCollector {
+        self.await_modal_interaction(shard_messenger)
     }
 
     /// Retrieves the message channel's category ID if the channel has one.
-    #[cfg(feature = "cache")]
-    pub async fn category_id(&self, cache: impl AsRef<Cache>) -> Option<ChannelId> {
-        cache.as_ref().channel_category_id(self.channel_id).await
-    }
-
-    pub(crate) fn check_content_length(map: &JsonMap) -> Result<()> {
-        if let Some(Value::String(ref content)) = map.get("content") {
-            if let Some(length_over) = Message::overflow_length(content) {
-                return Err(Error::Model(ModelError::MessageTooLong(length_over)));
-            }
-        }
-
-        Ok(())
-    }
-
-    pub(crate) fn check_embed_length(map: &JsonMap) -> Result<()> {
-        let embeds = match map.get("embeds") {
-            Some(&Value::Array(ref value)) => value,
-            _ => return Ok(()),
-        };
-
-        if embeds.len() > 10 {
-            return Err(Error::Model(ModelError::EmbedAmount));
-        }
-
-        for embed in embeds {
-            let mut total: usize = 0;
-
-            if let Some(&Value::Object(ref author)) = embed.get("author") {
-                if let Some(&Value::Object(ref name)) = author.get("name") {
-                    total += name.len();
-                }
-            }
-
-            if let Some(&Value::String(ref description)) = embed.get("description") {
-                total += description.len();
-            }
-
-            if let Some(&Value::Array(ref fields)) = embed.get("fields") {
-                for field_as_value in fields {
-                    if let Value::Object(ref field) = *field_as_value {
-                        if let Some(&Value::String(ref field_name)) = field.get("name") {
-                            total += field_name.len();
-                        }
-
-                        if let Some(&Value::String(ref field_value)) = field.get("value") {
-                            total += field_value.len();
-                        }
-                    }
-                }
-            }
-
-            if let Some(&Value::Object(ref footer)) = embed.get("footer") {
-                if let Some(&Value::String(ref text)) = footer.get("text") {
-                    total += text.len();
-                }
-            }
-
-            if let Some(&Value::String(ref title)) = embed.get("title") {
-                total += title.len();
-            }
-
-            if total > constants::EMBED_MAX_LENGTH {
-                let overflow = total - constants::EMBED_MAX_LENGTH;
-                return Err(Error::Model(ModelError::EmbedTooLarge(overflow)));
-            }
-        }
-
-        Ok(())
+    pub async fn category_id(&self, cache_http: impl CacheHttp) -> Option<ChannelId> {
+        self.channel_id.to_channel(cache_http).await.ok()?.guild()?.parent_id
     }
 }
 
@@ -1013,6 +835,8 @@ impl<'a> From<&'a Message> for MessageId {
 /// Multiple of the same [reaction type] are sent into one [`MessageReaction`],
 /// with an associated [`Self::count`].
 ///
+/// [Discord docs](https://discord.com/developers/docs/resources/channel#reaction-object).
+///
 /// [reaction type]: ReactionType
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -1027,105 +851,84 @@ pub struct MessageReaction {
     pub reaction_type: ReactionType,
 }
 
-/// Differentiates between regular and different types of system messages.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
-#[non_exhaustive]
-pub enum MessageType {
-    /// A regular message.
-    Regular = 0,
-    /// An indicator that a recipient was added by the author.
-    GroupRecipientAddition = 1,
-    /// An indicator that a recipient was removed by the author.
-    GroupRecipientRemoval = 2,
-    /// An indicator that a call was started by the author.
-    GroupCallCreation = 3,
-    /// An indicator that the group name was modified by the author.
-    GroupNameUpdate = 4,
-    /// An indicator that the group icon was modified by the author.
-    GroupIconUpdate = 5,
-    /// An indicator that a message was pinned by the author.
-    PinsAdd = 6,
-    /// An indicator that a member joined the guild.
-    MemberJoin = 7,
-    /// An indicator that someone has boosted the guild.
-    NitroBoost = 8,
-    /// An indicator that the guild has reached nitro tier 1
-    NitroTier1 = 9,
-    /// An indicator that the guild has reached nitro tier 2
-    NitroTier2 = 10,
-    /// An indicator that the guild has reached nitro tier 3
-    NitroTier3 = 11,
-    /// An indicator that the channel is now following an announcement channel
-    ChannelFollowAdd = 12,
-    /// An indicator that the guild is disqualified for Discovery Feature
-    GuildDiscoveryDisqualified = 14,
-    /// An indicator that the guild is requalified for Discovery Feature
-    GuildDiscoveryRequalified = 15,
-    /// The first warning before guild discovery removal.
-    GuildDiscoveryGracePeriodInitialWarning = 16,
-    /// The last warning before guild discovery removal.
-    GuildDiscoveryGracePeriodFinalWarning = 17,
-    /// Message sent to inform users that a thread was created.
-    ThreadCreated = 18,
-    /// A message reply.
-    InlineReply = 19,
-    /// A slash command.
-    ApplicationCommand = 20,
-    /// A thread start message.
-    ThreadStarterMessage = 21,
-    /// Server setup tips.
-    GuildInviteReminder = 22,
-    /// An indicator that the message is of unknown type.
-    Unknown = !0,
+enum_number! {
+    /// Differentiates between regular and different types of system messages.
+    ///
+    /// [Discord docs](https://discord.com/developers/docs/resources/channel#message-object-message-types).
+    #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+    #[serde(from = "u8", into = "u8")]
+    #[non_exhaustive]
+    pub enum MessageType {
+        /// A regular message.
+        #[default]
+        Regular = 0,
+        /// An indicator that a recipient was added by the author.
+        GroupRecipientAddition = 1,
+        /// An indicator that a recipient was removed by the author.
+        GroupRecipientRemoval = 2,
+        /// An indicator that a call was started by the author.
+        GroupCallCreation = 3,
+        /// An indicator that the group name was modified by the author.
+        GroupNameUpdate = 4,
+        /// An indicator that the group icon was modified by the author.
+        GroupIconUpdate = 5,
+        /// An indicator that a message was pinned by the author.
+        PinsAdd = 6,
+        /// An indicator that a member joined the guild.
+        MemberJoin = 7,
+        /// An indicator that someone has boosted the guild.
+        NitroBoost = 8,
+        /// An indicator that the guild has reached nitro tier 1
+        NitroTier1 = 9,
+        /// An indicator that the guild has reached nitro tier 2
+        NitroTier2 = 10,
+        /// An indicator that the guild has reached nitro tier 3
+        NitroTier3 = 11,
+        /// An indicator that the channel is now following a news channel
+        ChannelFollowAdd = 12,
+        /// An indicator that the guild is disqualified for Discovery Feature
+        GuildDiscoveryDisqualified = 14,
+        /// An indicator that the guild is requalified for Discovery Feature
+        GuildDiscoveryRequalified = 15,
+        /// The first warning before guild discovery removal.
+        GuildDiscoveryGracePeriodInitialWarning = 16,
+        /// The last warning before guild discovery removal.
+        GuildDiscoveryGracePeriodFinalWarning = 17,
+        /// Message sent to inform users that a thread was created.
+        ThreadCreated = 18,
+        /// A message reply.
+        InlineReply = 19,
+        /// A slash command.
+        ChatInputCommand = 20,
+        /// A thread start message.
+        ThreadStarterMessage = 21,
+        /// Server setup tips.
+        GuildInviteReminder = 22,
+        /// A context menu command.
+        ContextMenuCommand = 23,
+        /// A message from an auto moderation action.
+        AutoModAction = 24,
+        _ => Unknown(u8),
+    }
 }
 
-enum_number!(MessageType {
-    Regular,
-    GroupRecipientAddition,
-    GroupRecipientRemoval,
-    GroupCallCreation,
-    GroupNameUpdate,
-    GroupIconUpdate,
-    PinsAdd,
-    MemberJoin,
-    NitroBoost,
-    NitroTier1,
-    NitroTier2,
-    NitroTier3,
-    ChannelFollowAdd,
-    GuildDiscoveryDisqualified,
-    GuildDiscoveryRequalified,
-    GuildDiscoveryGracePeriodInitialWarning,
-    GuildDiscoveryGracePeriodFinalWarning
-    ThreadCreated,
-    InlineReply,
-    ApplicationCommand,
-    ThreadStarterMessage,
-    GuildInviteReminder
-});
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
-#[non_exhaustive]
-pub enum MessageActivityKind {
-    #[allow(clippy::upper_case_acronyms)]
-    JOIN = 1,
-    #[allow(clippy::upper_case_acronyms)]
-    SPECTATE = 2,
-    #[allow(clippy::upper_case_acronyms)]
-    LISTEN = 3,
-    #[allow(non_camel_case_types)]
-    JOIN_REQUEST = 5,
-    Unknown = !0,
+enum_number! {
+    /// [Discord docs](https://discord.com/developers/docs/resources/channel#message-object-message-activity-types).
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+    #[serde(from = "u8", into = "u8")]
+    #[non_exhaustive]
+    pub enum MessageActivityKind {
+        Join = 1,
+        Spectate = 2,
+        Listen = 3,
+        JoinRequest = 5,
+        _ => Unknown(u8),
+    }
 }
-
-enum_number!(MessageActivityKind {
-    JOIN,
-    SPECTATE,
-    LISTEN,
-    JOIN_REQUEST
-});
 
 /// Rich Presence application information.
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/application#application-object).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct MessageApplication {
@@ -1142,6 +945,8 @@ pub struct MessageApplication {
 }
 
 /// Rich Presence activity information.
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/channel#message-object-message-activity-structure).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct MessageActivity {
@@ -1153,6 +958,8 @@ pub struct MessageActivity {
 }
 
 /// Reference data sent with crossposted messages.
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/channel#message-reference-object-message-reference-structure).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct MessageReference {
@@ -1184,7 +991,7 @@ impl From<(ChannelId, MessageId)> for MessageReference {
     }
 }
 
-/// Channel Mention Object
+/// [Discord docs](https://discord.com/developers/docs/resources/channel#channel-mention-object).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChannelMention {
     /// ID of the channel.
@@ -1198,52 +1005,30 @@ pub struct ChannelMention {
     pub name: String,
 }
 
-/// Describes extra features of the message.
-#[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash)]
-#[cfg_attr(not(feature = "model"), derive(Debug, Deserialize, Serialize))]
-pub struct MessageFlags {
-    pub bits: u64,
-}
-
-#[cfg(feature = "model")]
-__impl_bitflags! {
-    MessageFlags: u64 {
+bitflags! {
+    /// Describes extra features of the message.
+    ///
+    /// [Discord docs](https://discord.com/developers/docs/resources/channel#message-object-message-flags).
+    #[derive(Default)]
+    pub struct MessageFlags: u64 {
         /// This message has been published to subscribed channels (via Channel Following).
-        CROSSPOSTED = 0b0000_0000_0000_0000_0000_0000_0000_0001;
+        const CROSSPOSTED = 1 << 0;
         /// This message originated from a message in another channel (via Channel Following).
-        IS_CROSSPOST = 0b0000_0000_0000_0000_0000_0000_0000_0010;
+        const IS_CROSSPOST = 1 << 1;
         /// Do not include any embeds when serializing this message.
-        SUPPRESS_EMBEDS = 0b0000_0000_0000_0000_0000_0000_0000_0100;
+        const SUPPRESS_EMBEDS = 1 << 2;
         /// The source message for this crosspost has been deleted (via Channel Following).
-        SOURCE_MESSAGE_DELETED = 0b0000_0000_0000_0000_0000_0000_0000_1000;
+        const SOURCE_MESSAGE_DELETED = 1 << 3;
         /// This message came from the urgent message system.
-        URGENT = 0b0000_0000_0000_0000_0000_0000_0001_0000;
+        const URGENT = 1 << 4;
         /// This message has an associated thread, with the same id as the message.
-        HAS_THREAD = 0b0000_0000_0000_0000_0000_0000_0010_0000;
+        const HAS_THREAD = 1 << 5;
         /// This message is only visible to the user who invoked the Interaction.
-        EPHEMERAL = 0b0000_0000_0000_0000_0000_0000_0100_0000;
+        const EPHEMERAL = 1 << 6;
         /// This message is an Interaction Response and the bot is "thinking".
-        LOADING = 0b0000_0000_0000_0000_0000_0000_1000_0000;
-    }
-}
-
-#[cfg(feature = "model")]
-impl<'de> Deserialize<'de> for MessageFlags {
-    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(MessageFlags::from_bits_truncate(deserializer.deserialize_u64(U64Visitor)?))
-    }
-}
-
-#[cfg(feature = "model")]
-impl Serialize for MessageFlags {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_u64(self.bits())
+        const LOADING = 1 << 7;
+        /// This message failed to mention some roles and add their members to the thread.
+        const FAILED_TO_MENTION_SOME_ROLES_IN_THREAD = 1 << 8;
     }
 }
 
@@ -1251,12 +1036,12 @@ impl Serialize for MessageFlags {
 impl MessageId {
     /// Returns a link referencing this message. When clicked, users will jump to the message.
     /// The link will be valid for messages in either private channels or guilds.
+    #[must_use]
     pub fn link(&self, channel_id: ChannelId, guild_id: Option<GuildId>) -> String {
-        match guild_id {
-            Some(guild_id) => {
-                format!("https://discord.com/channels/{}/{}/{}", guild_id.0, channel_id.0, self.0)
-            },
-            None => format!("https://discord.com/channels/@me/{}/{}", channel_id.0, self.0),
+        if let Some(guild_id) = guild_id {
+            format!("https://discord.com/channels/{guild_id}/{channel_id}/{self}")
+        } else {
+            format!("https://discord.com/channels/@me/{channel_id}/{self}")
         }
     }
 
@@ -1280,4 +1065,11 @@ impl MessageId {
 
         self.link(channel_id, guild_id)
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Nonce {
+    String(String),
+    Number(u64),
 }

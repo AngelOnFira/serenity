@@ -1,18 +1,22 @@
-use std::{collections::HashSet, error::Error as StdError, fmt};
+use std::collections::HashSet;
+use std::error::Error as StdError;
+use std::fmt;
 
 use futures::future::BoxFuture;
 
 use super::Args;
 use crate::client::Context;
-use crate::model::{channel::Message, id::UserId, permissions::Permissions};
-use crate::utils::Colour;
+use crate::model::channel::Message;
+use crate::model::colour::Colour;
+use crate::model::id::UserId;
+use crate::model::permissions::Permissions;
 
 pub mod buckets;
 mod check;
 
 pub use self::check::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum OnlyIn {
     Dm,
@@ -124,7 +128,7 @@ impl PartialEq for HelpCommand {
 /// Lacking required permissions to execute the command.
 /// Lacking required roles to execute the command.
 /// The command can't be used in the current channel (as in `DM only` or `guild only`).
-#[derive(Copy, Clone, Debug, PartialOrd, Ord, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum HelpBehaviour {
     /// The command will be displayed, hence nothing will be done.
@@ -135,7 +139,7 @@ pub enum HelpBehaviour {
     Hide,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HelpOptions {
     /// Which names should the help command use for dispatching.
     /// Defaults to `["help"]`

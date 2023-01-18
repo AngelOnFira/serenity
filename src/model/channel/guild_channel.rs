@@ -1,62 +1,61 @@
-#[cfg(feature = "model")]
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::fmt;
 #[cfg(feature = "model")]
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
-#[cfg(feature = "cache")]
-use futures::stream::StreamExt;
-
 #[cfg(feature = "model")]
-use crate::builder::EditChannel;
-#[cfg(feature = "model")]
-use crate::builder::{CreateInvite, CreateMessage, EditMessage, EditVoiceState, GetMessages};
-use crate::builder::{CreateStageInstance, EditStageInstance};
+use crate::builder::{
+    CreateAttachment,
+    CreateInvite,
+    CreateMessage,
+    CreateStageInstance,
+    CreateThread,
+    CreateWebhook,
+    EditChannel,
+    EditMessage,
+    EditStageInstance,
+    EditThread,
+    EditVoiceState,
+    GetMessages,
+};
 #[cfg(feature = "cache")]
-use crate::cache::Cache;
+use crate::cache::{self, Cache};
 #[cfg(feature = "collector")]
 use crate::client::bridge::gateway::ShardMessenger;
 #[cfg(feature = "collector")]
-use crate::collector::{
-    CollectReaction,
-    CollectReply,
-    MessageCollectorBuilder,
-    ReactionCollectorBuilder,
-};
-#[cfg(feature = "model")]
-use crate::http::AttachmentType;
+use crate::collector::{MessageCollector, ReactionCollector};
 #[cfg(feature = "model")]
 use crate::http::{CacheHttp, Http, Typing};
 #[cfg(all(feature = "cache", feature = "model"))]
 use crate::internal::prelude::*;
 use crate::model::prelude::*;
-#[cfg(all(feature = "model", feature = "utils"))]
-use crate::utils as serenity_utils;
+use crate::model::Timestamp;
 
 /// Represents a guild's text, news, or voice channel. Some methods are available
 /// only for voice channels and some are only available for text channels.
 /// News channels are a subset of text channels and lack slow mode hence
-/// [`Self::slow_mode_rate`] will be [`None`].
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// [`Self::rate_limit_per_user`] will be [`None`].
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/channel#channel-object).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct GuildChannel {
     /// The unique Id of the channel.
-    ///
-    /// The default channel Id shares the Id of the guild and the default role.
     pub id: ChannelId,
     /// The bitrate of the channel.
     ///
     /// **Note**: This is only available for voice and stage channels.
-    pub bitrate: Option<u64>,
-    /// Whether this guild channel belongs in a category.
-    #[serde(rename = "parent_id")]
-    pub category_id: Option<ChannelId>,
+    pub bitrate: Option<u32>,
+    /// The Id of the parent category for a channel, or of the parent text channel for a thread.
+    ///
+    /// **Note**: This is only available for channels in a category and thread channels.
+    pub parent_id: Option<ChannelId>,
     /// The Id of the guild the channel is located in.
     ///
     /// If this matches with the [`id`], then this is the default text channel.
     ///
     /// The original voice channel has an Id equal to the guild's Id,
     /// incremented by one.
+    #[serde(default)]
     pub guild_id: GuildId,
     /// The type of the channel.
     #[serde(rename = "type")]
@@ -68,7 +67,7 @@ pub struct GuildChannel {
     /// The timestamp of the time a pin was most recently made.
     ///
     /// **Note**: This is only available for text channels.
-    pub last_pin_timestamp: Option<DateTime<Utc>>,
+    pub last_pin_timestamp: Option<Timestamp>,
     /// The name of the channel.
     pub name: String,
     /// Permission overwrites for [`Member`]s and for [`Role`]s.
@@ -76,10 +75,9 @@ pub struct GuildChannel {
     pub permission_overwrites: Vec<PermissionOverwrite>,
     /// The position of the channel.
     ///
-    /// The default text channel will _almost always_ have a position of `-1` or
-    /// `0`.
+    /// The default text channel will _almost always_ have a position of `0`.
     #[serde(default)]
-    pub position: i64,
+    pub position: u32,
     /// The topic of the channel.
     ///
     /// **Note**: This is only available for text and stage channels.
@@ -87,7 +85,7 @@ pub struct GuildChannel {
     /// The maximum number of members allowed in the channel.
     ///
     /// **Note**: This is only available for voice channels.
-    pub user_limit: Option<u64>,
+    pub user_limit: Option<u32>,
     /// Used to tell if the channel is not safe for work.
     /// Note however, it's recommended to use [`Self::is_nsfw`] as it's gonna be more accurate.
     // This field can or can not be present sometimes, but if it isn't
@@ -98,8 +96,9 @@ pub struct GuildChannel {
     ///
     /// **Note**: This is only available for text channels excluding news
     /// channels.
-    #[serde(default, rename = "rate_limit_per_user")]
-    pub slow_mode_rate: Option<u64>,
+    #[doc(alias = "slowmode")]
+    #[serde(default)]
+    pub rate_limit_per_user: Option<u64>,
     /// The region override.
     ///
     /// **Note**: This is only available for voice and stage channels. [`None`]
@@ -107,10 +106,12 @@ pub struct GuildChannel {
     pub rtc_region: Option<String>,
     /// The video quality mode for a voice channel.
     pub video_quality_mode: Option<VideoQualityMode>,
-    /// An approximate count of messages in the thread, stops counting at 50.
+    /// An approximate count of messages in the thread.
+    ///
+    /// This is currently saturated at 255 to prevent breaking.
     ///
     /// **Note**: This is only available on thread channels.
-    pub message_count: Option<u8>,
+    pub message_count: Option<u32>,
     /// An approximate count of users in a thread, stops counting at 50.
     ///
     /// **Note**: This is only available on thread channels.
@@ -133,8 +134,9 @@ pub struct GuildChannel {
 impl GuildChannel {
     /// Whether or not this channel is text-based, meaning that
     /// it is possible to send messages.
+    #[must_use]
     pub fn is_text_based(&self) -> bool {
-        matches!(self.kind, ChannelType::Text | ChannelType::News)
+        matches!(self.kind, ChannelType::Text | ChannelType::News | ChannelType::Voice)
     }
 
     /// Broadcasts to the channel that the current user is typing.
@@ -151,49 +153,43 @@ impl GuildChannel {
     /// [Send Messages]: Permissions::SEND_MESSAGES
     #[inline]
     pub async fn broadcast_typing(&self, http: impl AsRef<Http>) -> Result<()> {
-        self.id.broadcast_typing(&http).await
+        self.id.broadcast_typing(http).await
     }
 
-    /// Creates an invite leading to the given channel.
+    /// Creates an invite for the given channel.
     ///
-    /// **Note**: Requres the [Create Invite] permission.
+    /// **Note**: Requires the [Create Instant Invite] permission.
     ///
     /// # Examples
     ///
     /// Create an invite that can only be used 5 times:
     ///
     /// ```rust,ignore
-    /// let invite = channel.create_invite(&context, |i| i.max_uses(5)).await;
+    /// let builder = CreateBuilder::default().max_uses(5);
+    /// let invite = channel.create_invite(&context, builder).await;
     /// ```
     ///
     /// # Errors
     ///
-    /// If the `cache` is enabled, returns [`ModelError::InvalidPermissions`]
-    /// if the current user does not have permission to create invites.
+    /// If the `cache` is enabled, returns [`ModelError::InvalidPermissions`] if the current user
+    /// lacks permission. Otherwise returns [`Error::Http`], as well as if invalid data is given.
     ///
-    /// Otherwise returns [`Error::Http`] if the current user lacks permission.
-    ///
-    /// [Create Instant Invite]: Permissions::CREATE_INVITE
+    /// [Create Instant Invite]: Permissions::CREATE_INSTANT_INVITE
     #[inline]
     #[cfg(feature = "utils")]
-    pub async fn create_invite<F>(&self, cache_http: impl CacheHttp, f: F) -> Result<RichInvite>
-    where
-        F: FnOnce(&mut CreateInvite) -> &mut CreateInvite,
-    {
-        #[cfg(feature = "cache")]
-        {
-            if let Some(cache) = cache_http.cache() {
-                utils::user_has_perms_cache(
-                    cache,
-                    self.id,
-                    Some(self.guild_id),
-                    Permissions::CREATE_INVITE,
-                )
-                .await?;
-            }
-        }
-
-        self.id.create_invite(cache_http.http(), f).await
+    pub async fn create_invite(
+        &self,
+        cache_http: impl CacheHttp,
+        builder: CreateInvite<'_>,
+    ) -> Result<RichInvite> {
+        builder
+            .execute(
+                cache_http,
+                self.id,
+                #[cfg(feature = "cache")]
+                Some(self.guild_id),
+            )
+            .await
     }
 
     /// Creates a [permission overwrite][`PermissionOverwrite`] for either a
@@ -215,32 +211,25 @@ impl GuildChannel {
     /// # #[cfg(feature = "cache")]
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
     /// # use serenity::{cache::Cache, http::Http, model::id::{ChannelId, UserId}};
-    /// # use tokio::sync::RwLock;
     /// # use std::sync::Arc;
     /// #
-    /// #     let http = Arc::new(Http::default());
+    /// #     let http = Arc::new(Http::new("token"));
     /// #     let cache = Cache::default();
-    /// #     let (channel_id, user_id) = (ChannelId(0), UserId(0));
+    /// #     let (channel_id, user_id) = (ChannelId::new(1), UserId::new(1));
     /// #
-    /// use serenity::model::channel::{
-    ///     PermissionOverwrite,
-    ///     PermissionOverwriteType,
-    /// };
+    /// use serenity::model::channel::{PermissionOverwrite, PermissionOverwriteType};
     /// use serenity::model::{ModelError, Permissions};
     /// let allow = Permissions::SEND_MESSAGES;
     /// let deny = Permissions::SEND_TTS_MESSAGES | Permissions::ATTACH_FILES;
     /// let overwrite = PermissionOverwrite {
-    ///     allow: allow,
-    ///     deny: deny,
+    ///     allow,
+    ///     deny,
     ///     kind: PermissionOverwriteType::Member(user_id),
     /// };
     /// // assuming the cache has been unlocked
-    /// let channel = cache
-    ///     .guild_channel(channel_id)
-    ///     .await
-    ///     .ok_or(ModelError::ItemMissing)?;
+    /// let channel = cache.guild_channel(channel_id).ok_or(ModelError::ItemMissing)?;
     ///
-    /// channel.create_permission(&http, &overwrite).await?;
+    /// channel.create_permission(&http, overwrite).await?;
     /// #   Ok(())
     /// # }
     /// ```
@@ -253,34 +242,27 @@ impl GuildChannel {
     /// ```rust,no_run
     /// # #[cfg(feature = "cache")]
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// # use serenity::{cache::Cache, http::Http, model::id::{ChannelId, UserId}};
-    /// # use tokio::sync::RwLock;
+    /// # use serenity::{cache::Cache, http::Http, model::id::{ChannelId, UserId, RoleId}};
     /// # use std::sync::Arc;
     /// #
-    /// #   let http = Arc::new(Http::default());
+    /// #   let http = Arc::new(Http::new("token"));
     /// #   let cache = Cache::default();
-    /// #   let (channel_id, user_id) = (ChannelId(0), UserId(0));
+    /// #   let (channel_id, user_id, role_id) = (ChannelId::new(1), UserId::new(1), RoleId::new(1));
     /// #
-    /// use serenity::model::channel::{
-    ///     PermissionOverwrite,
-    ///     PermissionOverwriteType,
-    /// };
-    /// use serenity::model::{ModelError, Permissions, channel::Channel};
+    /// use serenity::model::channel::{Channel, PermissionOverwrite, PermissionOverwriteType};
+    /// use serenity::model::{ModelError, Permissions};
     ///
     /// let allow = Permissions::SEND_MESSAGES;
     /// let deny = Permissions::SEND_TTS_MESSAGES | Permissions::ATTACH_FILES;
     /// let overwrite = PermissionOverwrite {
-    ///     allow: allow,
-    ///     deny: deny,
-    ///     kind: PermissionOverwriteType::Member(user_id),
+    ///     allow,
+    ///     deny,
+    ///     kind: PermissionOverwriteType::Role(role_id),
     /// };
     ///
-    /// let channel = cache
-    ///     .guild_channel(channel_id)
-    ///     .await
-    ///     .ok_or(ModelError::ItemMissing)?;
+    /// let channel = cache.guild_channel(channel_id).ok_or(ModelError::ItemMissing)?;
     ///
-    /// channel.create_permission(&http, &overwrite).await?;
+    /// channel.create_permission(&http, overwrite).await?;
     /// #     Ok(())
     /// # }
     /// ```
@@ -298,14 +280,14 @@ impl GuildChannel {
     pub async fn create_permission(
         &self,
         http: impl AsRef<Http>,
-        target: &PermissionOverwrite,
+        target: PermissionOverwrite,
     ) -> Result<()> {
-        self.id.create_permission(&http, target).await
+        self.id.create_permission(http, target).await
     }
 
     /// Deletes this channel, returning the channel on a successful deletion.
     ///
-    /// **Note**: Requres the [Manage Channels] permission.
+    /// **Note**: Requires the [Manage Channels] permission.
     ///
     /// # Errors
     ///
@@ -319,17 +301,16 @@ impl GuildChannel {
         #[cfg(feature = "cache")]
         {
             if let Some(cache) = cache_http.cache() {
-                utils::user_has_perms_cache(
+                crate::utils::user_has_perms_cache(
                     cache,
                     self.id,
                     Some(self.guild_id),
                     Permissions::MANAGE_CHANNELS,
-                )
-                .await?;
+                )?;
             }
         }
 
-        self.id.delete(&cache_http.http()).await
+        self.id.delete(cache_http.http()).await
     }
 
     /// Deletes all messages by Ids from the given vector in the channel.
@@ -357,7 +338,7 @@ impl GuildChannel {
         T: AsRef<MessageId>,
         It: IntoIterator<Item = T>,
     {
-        self.id.delete_messages(&http, message_ids).await
+        self.id.delete_messages(http, message_ids).await
     }
 
     /// Deletes all permission overrides in the channel from a member
@@ -376,7 +357,7 @@ impl GuildChannel {
         http: impl AsRef<Http>,
         permission_type: PermissionOverwriteType,
     ) -> Result<()> {
-        self.id.delete_permission(&http, permission_type).await
+        self.id.delete_permission(http, permission_type).await
     }
 
     /// Deletes the given [`Reaction`] from the channel.
@@ -396,96 +377,98 @@ impl GuildChannel {
         user_id: Option<UserId>,
         reaction_type: impl Into<ReactionType>,
     ) -> Result<()> {
-        self.id.delete_reaction(&http, message_id, user_id, reaction_type).await
+        self.id.delete_reaction(http, message_id, user_id, reaction_type).await
     }
 
-    /// Modifies a channel's settings, such as its position or name.
+    /// Edits the channel's settings.
     ///
-    /// Refer to [`EditChannel`]s documentation for a full list of methods.
+    /// Refer to the documentation for [`EditChannel`] for a full list of methods.
+    ///
+    /// **Note**: Requires the [Manage Channels] permission. Modifying permissions via
+    /// [`EditChannel::permissions`] also requires the [Manage Roles] permission.
     ///
     /// # Examples
     ///
     /// Change a voice channels name and bitrate:
     ///
-    /// ```rust,ignore
-    /// channel.edit(&context, |c| c.name("test").bitrate(86400)).await;
+    /// ```rust,no_run
+    /// # use serenity::builder::EditChannel;
+    /// # use serenity::http::Http;
+    /// # use serenity::model::id::ChannelId;
+    /// # async fn run() {
+    /// #     let http = Http::new("token");
+    /// #     let channel = ChannelId::new(1234);
+    /// let builder = EditChannel::new().name("test").bitrate(86400);
+    /// channel.edit(&http, builder).await;
+    /// # }
     /// ```
     ///
     /// # Errors
     ///
-    /// If the `cache` is enabled, returns [ModelError::InvalidPermissions]
-    /// if the current user lacks permission to edit the channel.
+    /// If the `cache` is enabled, returns a [`ModelError::InvalidPermissions`] if the current user
+    /// lacks permission. Otherwise returns [`Error::Http`], as well as if invalid data is given.
     ///
-    /// Otherwise returns [`Error::Http`] if the current user lacks permission.
-    #[cfg(feature = "utils")]
-    pub async fn edit<F>(&mut self, cache_http: impl CacheHttp, f: F) -> Result<()>
-    where
-        F: FnOnce(&mut EditChannel) -> &mut EditChannel,
-    {
-        #[cfg(feature = "cache")]
-        {
-            if let Some(cache) = cache_http.cache() {
-                utils::user_has_perms_cache(
-                    cache,
-                    self.id,
-                    Some(self.guild_id),
-                    Permissions::MANAGE_CHANNELS,
-                )
-                .await?;
-            }
-        }
-
-        let mut map = HashMap::new();
-        map.insert("name", Value::String(self.name.clone()));
-        map.insert("position", Value::Number(Number::from(self.position)));
-
-        let mut edit_channel = EditChannel::default();
-        f(&mut edit_channel);
-        let edited = serenity_utils::hashmap_to_json_map(edit_channel.0);
-
-        *self = cache_http.http().edit_channel(self.id.0, &edited).await?;
-
+    /// [Manage Channels]: Permissions::MANAGE_CHANNELS
+    /// [Manage Roles]: Permissions::MANAGE_ROLES
+    pub async fn edit(
+        &mut self,
+        cache_http: impl CacheHttp,
+        builder: EditChannel<'_>,
+    ) -> Result<()> {
+        *self = builder
+            .execute(
+                cache_http,
+                self.id,
+                #[cfg(feature = "cache")]
+                Some(self.guild_id),
+            )
+            .await?;
         Ok(())
     }
 
     /// Edits a [`Message`] in the channel given its Id.
     ///
-    /// Message editing preserves all unchanged message data.
+    /// Message editing preserves all unchanged message data, with some exceptions for embeds and
+    /// attachments.
     ///
-    /// Refer to the documentation for [`EditMessage`] for more information
-    /// regarding message restrictions and requirements.
+    /// **Note**: In most cases requires that the current user be the author of the message.
     ///
-    /// **Note**: Requires that the current user be the author of the message.
+    /// Refer to the documentation for [`EditMessage`] for information regarding content
+    /// restrictions and requirements.
     ///
     /// # Errors
     ///
-    /// Returns a [`ModelError::MessageTooLong`] if the content of the message
-    /// is over the [`the limit`], containing the number of unicode code points
-    /// over the limit.
-    ///
-    /// [`EditMessage`]: crate::builder::EditMessage
-    /// [`the limit`]: crate::builder::EditMessage::content
+    /// See [`EditMessage::execute`] for a list of possible errors, and their corresponding
+    /// reasons.
     #[inline]
-    pub async fn edit_message<F>(
+    pub async fn edit_message(
         &self,
         http: impl AsRef<Http>,
         message_id: impl Into<MessageId>,
-        f: F,
-    ) -> Result<Message>
-    where
-        F: FnOnce(&mut EditMessage) -> &mut EditMessage,
-    {
-        self.id.edit_message(&http, message_id, f).await
+        builder: EditMessage,
+    ) -> Result<Message> {
+        self.id.edit_message(http, message_id, builder).await
     }
 
-    /// Edits a voice state in a stage channel. Pass [`None`] for `user_id` to
-    /// edit the current user's voice state.
+    /// Edits a thread.
     ///
-    /// Requires the [Mute Members] permission to suppress another user or
-    /// unsuppress the current user. This is not required if suppressing
-    /// the current user.
+    /// # Errors
     ///
-    /// Requires the [Request to Speak] permission.
+    /// Returns [`Error::Http`] if the current user lacks permission.
+    pub async fn edit_thread(
+        &mut self,
+        http: impl AsRef<Http>,
+        builder: EditThread<'_>,
+    ) -> Result<()> {
+        *self = self.id.edit_thread(http, builder).await?;
+        Ok(())
+    }
+
+    /// Edits the voice state of a given user in a stage channel.
+    ///
+    /// **Note**: Requires the [Request to Speak] permission. Also requires the [Mute Members]
+    /// permission to suppress another user or unsuppress the current user. This is not required if
+    /// suppressing the current user.
     ///
     /// # Example
     ///
@@ -497,45 +480,44 @@ impl GuildChannel {
     /// # use std::sync::Arc;
     /// # use serenity::{cache::Cache, http::Http, model::id::{ChannelId, UserId}};
     /// #
-    /// #     let http = Arc::new(Http::default());
+    /// #     let http = Arc::new(Http::new("token"));
     /// #     let cache = Cache::default();
-    /// #     let (channel_id, user_id) = (ChannelId(0), UserId(0));
+    /// #     let (channel_id, user_id) = (ChannelId::new(1), UserId::new(1));
     /// #
+    /// use serenity::builder::EditVoiceState;
     /// use serenity::model::ModelError;
     ///
     /// // assuming the cache has been unlocked
-    /// let channel = cache.guild_channel(channel_id).await.ok_or(ModelError::ItemMissing)?;
+    /// let channel = cache.guild_channel(channel_id).ok_or(ModelError::ItemMissing)?;
     ///
-    /// channel.edit_voice_state(&http, user_id, |v| v.suppress(false)).await?;
+    /// let builder = EditVoiceState::new().suppress(false);
+    /// channel.edit_voice_state(&http, user_id, builder).await?;
     /// #   Ok(())
     /// # }
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns a [`ModelError::InvalidChannelType`] if the channel type is not
-    /// stage.
+    /// If the `cache` is enabled, returns a [`ModelError::InvalidChannelType`] if the channel is
+    /// not a stage channel.
     ///
-    /// [Mute Members]: crate::model::permissions::Permissions::MUTE_MEMBERS
-    /// [Request to Speak]: crate::model::permissions::Permissions::REQUEST_TO_SPEAK
-    pub async fn edit_voice_state<F>(
+    /// Returns [`Error::Http`] if the user lacks permission, or if invalid data is given.
+    ///
+    /// [Request to Speak]: Permissions::REQUEST_TO_SPEAK
+    /// [Mute Members]: Permissions::MUTE_MEMBERS
+    pub async fn edit_voice_state(
         &self,
-        http: impl AsRef<Http>,
+        cache_http: impl CacheHttp,
         user_id: impl Into<UserId>,
-        f: F,
-    ) -> Result<()>
-    where
-        F: FnOnce(&mut EditVoiceState) -> &mut EditVoiceState,
-    {
-        self._edit_voice_state(http, Some(user_id), f).await
+        builder: EditVoiceState,
+    ) -> Result<()> {
+        builder.execute(cache_http, self.guild_id, self.id, Some(user_id.into())).await
     }
 
     /// Edits the current user's voice state in a stage channel.
     ///
-    /// The [Mute Members] permission is **not** required if suppressing the
-    /// current user.
-    ///
-    /// Requires the [Request to Speak] permission.
+    /// **Note**: Requires the [Request to Speak] permission. The [Mute Members] permission is
+    /// **not** required.
     ///
     /// # Example
     ///
@@ -547,70 +529,68 @@ impl GuildChannel {
     /// # use std::sync::Arc;
     /// # use serenity::{cache::Cache, http::Http, model::id::ChannelId};
     /// #
-    /// #     let http = Arc::new(Http::default());
+    /// #     let http = Arc::new(Http::new("token"));
     /// #     let cache = Cache::default();
-    /// #     let channel_id = ChannelId(0);
+    /// #     let channel_id = ChannelId::new(1);
     /// #
+    /// use serenity::builder::EditVoiceState;
     /// use serenity::model::ModelError;
     ///
     /// // assuming the cache has been unlocked
-    /// let channel = cache.guild_channel(channel_id).await.ok_or(ModelError::ItemMissing)?;
+    /// let channel = cache.guild_channel(channel_id).ok_or(ModelError::ItemMissing)?;
     ///
     /// // Send a request to speak
-    /// channel.edit_own_voice_state(&http, |v| v.request_to_speak(true)).await?;
+    /// let builder = EditVoiceState::new().request_to_speak(true);
+    /// channel.edit_own_voice_state(&http, builder.clone()).await?;
     ///
     /// // Clear own request to speak
-    /// channel.edit_own_voice_state(&http, |v| v.request_to_speak(false)).await?;
+    /// let builder = builder.request_to_speak(false);
+    /// channel.edit_own_voice_state(&http, builder).await?;
     /// #   Ok(())
     /// # }
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns a [`ModelError::InvalidChannelType`] if the channel type is not
-    /// stage.
+    /// If the `cache` is enabled, returns a [`ModelError::InvalidChannelType`] if the channel is
+    /// not a stage channel.
     ///
-    /// [Mute Members]: crate::model::permissions::Permissions::MUTE_MEMBERS
-    /// [Request to Speak]: crate::model::permissions::Permissions::REQUEST_TO_SPEAK
-    pub async fn edit_own_voice_state<F>(&self, http: impl AsRef<Http>, f: F) -> Result<()>
-    where
-        F: FnOnce(&mut EditVoiceState) -> &mut EditVoiceState,
-    {
-        self._edit_voice_state(http, None::<u64>, f).await
+    /// Returns [`Error::Http`] if the user lacks permission, or if invalid data is given.
+    ///
+    /// [Request to Speak]: Permissions::REQUEST_TO_SPEAK
+    /// [Mute Members]: Permissions::MUTE_MEMBERS
+    pub async fn edit_own_voice_state(
+        &self,
+        cache_http: impl CacheHttp,
+        builder: EditVoiceState,
+    ) -> Result<()> {
+        builder.execute(cache_http, self.guild_id, self.id, None).await
     }
 
-    async fn _edit_voice_state<F>(
+    /// Follows the News Channel
+    ///
+    /// Requires [Manage Webhook] permissions on the target channel.
+    ///
+    /// **Note**: Only available on news channels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Http`] if the current user lacks permission.
+    /// [Manage Messages]: Permissions::MANAGE_MESSAGES
+    #[inline]
+    pub async fn follow(
         &self,
         http: impl AsRef<Http>,
-        user_id: Option<impl Into<UserId>>,
-        f: F,
-    ) -> Result<()>
-    where
-        F: FnOnce(&mut EditVoiceState) -> &mut EditVoiceState,
-    {
-        if self.kind != ChannelType::Stage {
-            return Err(Error::from(ModelError::InvalidChannelType));
-        }
-
-        let mut voice_state = EditVoiceState::default();
-        f(&mut voice_state);
-
-        voice_state.0.insert("channel_id", Value::String(self.id.0.to_string()));
-
-        let map = serenity_utils::hashmap_to_json_map(voice_state.0);
-
-        if let Some(id) = user_id {
-            http.as_ref().edit_voice_state(self.guild_id.0, id.into().0, &map).await
-        } else {
-            http.as_ref().edit_voice_state_me(self.guild_id.0, &map).await
-        }
+        target_channel_id: impl Into<ChannelId>,
+    ) -> Result<FollowedChannel> {
+        self.id.follow(http, target_channel_id).await
     }
 
     /// Attempts to find this channel's guild in the Cache.
     #[cfg(feature = "cache")]
     #[inline]
-    pub async fn guild(&self, cache: impl AsRef<Cache>) -> Option<Guild> {
-        cache.as_ref().guild(self.guild_id).await
+    pub fn guild<'a>(&self, cache: &'a impl AsRef<Cache>) -> Option<cache::GuildRef<'a>> {
+        cache.as_ref().guild(self.guild_id)
     }
 
     /// Gets all of the channel's invites.
@@ -624,7 +604,7 @@ impl GuildChannel {
     /// [Manage Channels]: Permissions::MANAGE_CHANNELS
     #[inline]
     pub async fn invites(&self, http: impl AsRef<Http>) -> Result<Vec<RichInvite>> {
-        self.id.invites(&http).await
+        self.id.invites(http).await
     }
 
     /// Determines if the channel is NSFW.
@@ -632,6 +612,7 @@ impl GuildChannel {
     /// Only [text channels][`ChannelType::Text`] are taken into consideration
     /// as being NSFW. [voice channels][`ChannelType::Voice`] are never NSFW.
     #[inline]
+    #[must_use]
     pub fn is_nsfw(&self) -> bool {
         self.kind == ChannelType::Text && self.nsfw
     }
@@ -649,36 +630,33 @@ impl GuildChannel {
     #[inline]
     pub async fn message(
         &self,
-        http: impl AsRef<Http>,
+        cache_http: impl CacheHttp,
         message_id: impl Into<MessageId>,
     ) -> Result<Message> {
-        self.id.message(&http, message_id).await
+        self.id.message(cache_http, message_id).await
     }
 
     /// Gets messages from the channel.
     ///
-    /// Refer to the [`GetMessages`]-builder for more information on how to
-    /// use `builder`.
-    ///
-    /// **Note**: Returns an empty [`Vec`] if the current user does not have the
-    /// [Read Message History] permission.
+    /// **Note**: If the user does not have the [Read Message History] permission, returns an empty
+    /// [`Vec`].
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Http`] if the current user lacks permission to
-    /// view the channel.
+    /// Returns [`Error::Http`] if the current user lacks permission.
     ///
-    /// [`GetMessages`]: crate::builder::GetMessages
     /// [Read Message History]: Permissions::READ_MESSAGE_HISTORY
     #[inline]
-    pub async fn messages<F>(&self, http: impl AsRef<Http>, builder: F) -> Result<Vec<Message>>
-    where
-        F: FnOnce(&mut GetMessages) -> &mut GetMessages,
-    {
-        self.id.messages(&http, builder).await
+    pub async fn messages(
+        &self,
+        http: impl AsRef<Http>,
+        builder: GetMessages,
+    ) -> Result<Vec<Message>> {
+        self.id.messages(http, builder).await
     }
 
     /// Returns the name of the guild channel.
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -694,26 +672,27 @@ impl GuildChannel {
     /// channel:
     ///
     /// ```rust,no_run
-    /// use serenity::prelude::*;
     /// use serenity::model::prelude::*;
+    /// use serenity::prelude::*;
     /// struct Handler;
     ///
     /// #[serenity::async_trait]
     /// impl EventHandler for Handler {
     ///     async fn message(&self, context: Context, msg: Message) {
-    ///         let channel = match context.cache.guild_channel(msg.channel_id).await {
+    ///         let channel = match context.cache.guild_channel(msg.channel_id) {
     ///             Some(channel) => channel,
     ///             None => return,
     ///         };
     ///
-    ///         if let Ok(permissions) = channel.permissions_for_user(&context.cache, &msg.author).await {
+    ///         if let Ok(permissions) = channel.permissions_for_user(&context.cache, &msg.author) {
     ///             println!("The user's permissions: {:?}", permissions);
     ///         }
     ///     }
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client =Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
@@ -725,9 +704,10 @@ impl GuildChannel {
     /// for demonstrative purposes):
     ///
     /// ```rust,no_run
-    /// use serenity::prelude::*;
-    /// use serenity::model::prelude::*;
+    /// use serenity::builder::{CreateAttachment, CreateMessage};
     /// use serenity::model::channel::Channel;
+    /// use serenity::model::prelude::*;
+    /// use serenity::prelude::*;
     /// use tokio::fs::File;
     ///
     /// struct Handler;
@@ -735,38 +715,28 @@ impl GuildChannel {
     /// #[serenity::async_trait]
     /// impl EventHandler for Handler {
     ///     async fn message(&self, context: Context, mut msg: Message) {
-    ///         let channel = match context.cache.guild_channel(msg.channel_id).await {
-    ///             Some(channel) => channel,
+    ///         let current_user_id = context.cache.current_user().id;
+    ///         let permissions = match context.cache.guild_channel(msg.channel_id) {
+    ///             Some(channel) => channel.permissions_for_user(&context.cache, current_user_id),
     ///             None => return,
     ///         };
     ///
-    ///         let current_user_id = context.cache.current_user().await.id;
-    ///         if let Ok(permissions) = channel.permissions_for_user(&context.cache, current_user_id).await {
-    ///
+    ///         if let Ok(permissions) = permissions {
     ///             if !permissions.contains(Permissions::ATTACH_FILES | Permissions::SEND_MESSAGES) {
     ///                 return;
     ///             }
     ///
-    ///             let file = match File::open("./cat.png").await {
-    ///                 Ok(file) => file,
-    ///                 Err(why) => {
-    ///                     println!("Err opening file: {:?}", why);
+    ///             let file = CreateAttachment::path("cat.png").await.unwrap();
     ///
-    ///                     return;
-    ///                 },
-    ///             };
-    ///
-    ///             let _ = msg.channel_id.send_files(&context.http, vec![(&file, "cat.png")], |mut m| {
-    ///                 m.content("here's a cat");
-    ///                 m
-    ///             })
-    ///             .await;
+    ///             let builder = CreateMessage::new().content("here's a cat");
+    ///             let _ = msg.channel_id.send_files(&context.http, vec![file], builder).await;
     ///         }
     ///     }
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client =Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
@@ -782,12 +752,12 @@ impl GuildChannel {
     /// [Send Messages]: Permissions::SEND_MESSAGES
     #[cfg(feature = "cache")]
     #[inline]
-    pub async fn permissions_for_user(
+    pub fn permissions_for_user(
         &self,
         cache: impl AsRef<Cache>,
         user_id: impl Into<UserId>,
     ) -> Result<Permissions> {
-        let guild = self.guild(&cache).await.ok_or(Error::Model(ModelError::GuildNotFound))?;
+        let guild = self.guild(&cache).ok_or(Error::Model(ModelError::GuildNotFound))?;
         let member =
             guild.members.get(&user_id.into()).ok_or(Error::Model(ModelError::MemberNotFound))?;
         guild.user_permissions_in(self, member)
@@ -807,12 +777,12 @@ impl GuildChannel {
     /// be found in the [`Cache`].
     #[cfg(feature = "cache")]
     #[inline]
-    pub async fn permissions_for_role(
+    pub fn permissions_for_role(
         &self,
         cache: impl AsRef<Cache>,
         role_id: impl Into<RoleId>,
     ) -> Result<Permissions> {
-        let guild = self.guild(&cache).await.ok_or(Error::Model(ModelError::GuildNotFound))?;
+        let guild = self.guild(&cache).ok_or(Error::Model(ModelError::GuildNotFound))?;
         let role =
             guild.roles.get(&role_id.into()).ok_or(Error::Model(ModelError::RoleNotFound))?;
         guild.role_permissions_in(self, role)
@@ -834,7 +804,7 @@ impl GuildChannel {
         http: impl AsRef<Http>,
         message_id: impl Into<MessageId>,
     ) -> Result<()> {
-        self.id.pin(&http, message_id).await
+        self.id.pin(http, message_id).await
     }
 
     /// Gets all channel's pins.
@@ -849,7 +819,7 @@ impl GuildChannel {
     /// [Read Message History]: Permissions::READ_MESSAGE_HISTORY
     #[inline]
     pub async fn pins(&self, http: impl AsRef<Http>) -> Result<Vec<Message>> {
-        self.id.pins(&http).await
+        self.id.pins(http).await
     }
 
     /// Gets the list of [`User`]s who have reacted to a [`Message`] with a
@@ -864,6 +834,10 @@ impl GuildChannel {
     ///
     /// **Note**: Requires the [Read Message History] permission.
     ///
+    /// **Note**: If the passed reaction_type is a custom guild emoji, it must contain the name. So,
+    /// [`Emoji`] or [`EmojiIdentifier`] will always work, [`ReactionType`] only if
+    /// [`ReactionType::Custom::name`] is Some, and **[`EmojiId`] will never work**.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Http`] if the current user lacks permission.
@@ -877,95 +851,74 @@ impl GuildChannel {
         limit: Option<u8>,
         after: impl Into<Option<UserId>>,
     ) -> Result<Vec<User>> {
-        self.id.reaction_users(&http, message_id, reaction_type, limit, after).await
+        self.id.reaction_users(http, message_id, reaction_type, limit, after).await
     }
 
     /// Sends a message with just the given message content in the channel.
     ///
+    /// **Note**: Message content must be under 2000 unicode code points.
+    ///
     /// # Errors
     ///
-    /// Returns a [`ModelError::MessageTooLong`] if the content of the message
-    /// is over the above limit, containing the number of unicode code points
-    /// over the limit.
-    ///
-    /// May also return [`Error::Http`] if the current user lacks permission
-    /// to send a message to the channel.
+    /// Returns a [`ModelError::MessageTooLong`] if the content length is over the above limit. See
+    /// [`CreateMessage::execute`] for more details.
     #[inline]
     pub async fn say(
         &self,
-        http: impl AsRef<Http>,
-        content: impl std::fmt::Display,
+        cache_http: impl CacheHttp,
+        content: impl Into<String>,
     ) -> Result<Message> {
-        self.id.say(&http, content).await
+        self.id.say(cache_http, content).await
     }
 
-    /// Sends (a) file(s) along with optional message contents.
+    /// Sends file(s) along with optional message contents.
     ///
     /// Refer to [`ChannelId::send_files`] for examples and more information.
     ///
-    /// The [Attach Files] and [Send Messages] permissions are required.
-    ///
-    /// **Note**: Message contents must be under 2000 unicode code points.
-    ///
     /// # Errors
     ///
-    /// If the content of the message is over the above limit, then a
-    /// [`ModelError::MessageTooLong`] will be returned, containing the number
-    /// of unicode code points over the limit.
-    ///
-    /// [Attach Files]: Permissions::ATTACH_FILES
-    /// [Send Messages]: Permissions::SEND_MESSAGES
+    /// See [`CreateMessage::execute`] for a list of possible errors, and their corresponding
+    /// reasons.
     #[inline]
-    pub async fn send_files<'a, F, T, It>(
-        &self,
-        http: impl AsRef<Http>,
-        files: It,
-        f: F,
-    ) -> Result<Message>
-    where
-        for<'b> F: FnOnce(&'b mut CreateMessage<'a>) -> &'b mut CreateMessage<'a>,
-        T: Into<AttachmentType<'a>>,
-        It: IntoIterator<Item = T>,
-    {
-        self.id.send_files(&http, files, f).await
+    pub async fn send_files(
+        self,
+        cache_http: impl CacheHttp,
+        files: impl IntoIterator<Item = CreateAttachment>,
+        builder: CreateMessage,
+    ) -> Result<Message> {
+        builder
+            .files(files)
+            .execute(
+                cache_http,
+                self.id,
+                #[cfg(feature = "cache")]
+                Some(self.guild_id),
+            )
+            .await
     }
 
-    /// Sends a message to the channel with the given content.
+    /// Sends a message to the channel.
     ///
-    /// **Note**: This will only work when a [`Message`] is received.
-    ///
-    /// **Note**: Requires the [Send Messages] permission.
+    /// Refer to the documentation for [`CreateMessage`] for information regarding content
+    /// restrictions and requirements.
     ///
     /// # Errors
     ///
-    /// Returns a [`ModelError::MessageTooLong`] if the content of the message
-    /// is over the above limit, containing the number of unicode code points
-    /// over the limit.
-    ///
-    /// If the `cache` is enabled, returns a [`ModelError::InvalidPermissions`] if the current user does
-    /// not have the required permissions.
-    ///
-    /// Otherwise will return [`Error::Http`] if the current user lacks permission.
-    ///
-    /// [Send Messages]: Permissions::SEND_MESSAGES
-    pub async fn send_message<'a, F>(&self, cache_http: impl CacheHttp, f: F) -> Result<Message>
-    where
-        for<'b> F: FnOnce(&'b mut CreateMessage<'a>) -> &'b mut CreateMessage<'a>,
-    {
-        #[cfg(feature = "cache")]
-        {
-            if let Some(cache) = cache_http.cache() {
-                let req = Permissions::SEND_MESSAGES;
-
-                if let Ok(false) =
-                    utils::user_has_perms(&cache, self.id, Some(self.guild_id), req).await
-                {
-                    return Err(Error::Model(ModelError::InvalidPermissions(req)));
-                }
-            }
-        }
-
-        self.id.send_message(&cache_http.http(), f).await
+    /// See [`CreateMessage::execute`] for a list of possible errors, and their corresponding
+    /// reasons.
+    pub async fn send_message(
+        &self,
+        cache_http: impl CacheHttp,
+        builder: CreateMessage,
+    ) -> Result<Message> {
+        builder
+            .execute(
+                cache_http,
+                self.id,
+                #[cfg(feature = "cache")]
+                Some(self.guild_id),
+            )
+            .await
     }
 
     /// Starts typing in the channel for an indefinite period of time.
@@ -995,11 +948,12 @@ impl GuildChannel {
     /// # use std::sync::Arc;
     /// #
     /// # fn long_process() {}
-    /// # let http = Arc::new(Http::default());
+    /// # let http = Arc::new(Http::new("token"));
     /// # let cache = Cache::default();
     /// # let channel = cache
-    /// #    .guild_channel(ChannelId(7))
-    /// #    .await.ok_or(ModelError::ItemMissing)?;
+    /// #    .guild_channel(ChannelId::new(7))
+    /// #    .ok_or(ModelError::ItemMissing)?
+    /// #    .clone();
     /// // Initiate typing (assuming http is `Arc<Http>` and `channel` is bound)
     /// let typing = channel.start_typing(&http)?;
     ///
@@ -1013,8 +967,8 @@ impl GuildChannel {
     /// # }
     /// ```
     #[allow(clippy::missing_errors_doc)]
-    pub fn start_typing(self, http: &Arc<Http>) -> Result<Typing> {
-        http.start_typing(self.id.0)
+    pub fn start_typing(&self, http: &Arc<Http>) -> Result<Typing> {
+        http.start_typing(self.id)
     }
 
     /// Unpins a [`Message`] in the channel given by its Id.
@@ -1032,7 +986,7 @@ impl GuildChannel {
         http: impl AsRef<Http>,
         message_id: impl Into<MessageId>,
     ) -> Result<()> {
-        self.id.unpin(&http, message_id).await
+        self.id.unpin(http, message_id).await
     }
 
     /// Retrieves the channel's webhooks.
@@ -1046,7 +1000,7 @@ impl GuildChannel {
     /// [Manage Webhooks]: Permissions::MANAGE_WEBHOOKS
     #[inline]
     pub async fn webhooks(&self, http: impl AsRef<Http>) -> Result<Vec<Webhook>> {
-        self.id.webhooks(&http).await
+        self.id.webhooks(http).await
     }
 
     /// Retrieves [`Member`]s from the current channel.
@@ -1063,9 +1017,9 @@ impl GuildChannel {
     /// will return: [`ModelError::InvalidChannelType`].
     #[cfg(feature = "cache")]
     #[inline]
-    pub async fn members(&self, cache: impl AsRef<Cache>) -> Result<Vec<Member>> {
+    pub fn members(&self, cache: impl AsRef<Cache>) -> Result<Vec<Member>> {
         let cache = cache.as_ref();
-        let guild = cache.guild(self.guild_id).await.ok_or(ModelError::GuildNotFound)?;
+        let guild = cache.guild(self.guild_id).ok_or(ModelError::GuildNotFound)?;
 
         match self.kind {
             ChannelType::Voice | ChannelType::Stage => Ok(guild
@@ -1081,118 +1035,58 @@ impl GuildChannel {
                     })
                 })
                 .collect()),
-            ChannelType::News | ChannelType::Text => {
-                Ok(futures::stream::iter(guild.members.iter())
-                    .filter_map(|e| async move {
-                        if self
-                            .permissions_for_user(cache, e.0)
-                            .await
-                            .map(|p| p.contains(Permissions::READ_MESSAGES))
-                            .unwrap_or(false)
-                        {
-                            Some(e.1.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<Member>>()
-                    .await)
-            },
+            ChannelType::News | ChannelType::Text => Ok(guild
+                .members
+                .iter()
+                .filter(|e| {
+                    self.permissions_for_user(cache, e.0)
+                        .map(|p| p.contains(Permissions::VIEW_CHANNEL))
+                        .unwrap_or(false)
+                })
+                .map(|e| e.1.clone())
+                .collect::<Vec<Member>>()),
             _ => Err(Error::from(ModelError::InvalidChannelType)),
         }
     }
 
-    /// Returns a future that will await one message by this guild channel.
+    /// Returns a builder which can be awaited to obtain a message or stream of messages sent in this guild channel.
     #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub fn await_reply<'a>(
-        &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> CollectReply<'a> {
-        CollectReply::new(shard_messenger).channel_id(self.id.0)
+    pub fn await_reply(&self, shard_messenger: impl AsRef<ShardMessenger>) -> MessageCollector {
+        MessageCollector::new(shard_messenger).channel_id(self.id)
     }
 
-    /// Returns a stream builder which can be awaited to obtain a stream of messages sent by this guild channel.
+    /// Same as [`Self::await_reply`].
     #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub fn await_replies<'a>(
-        &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> MessageCollectorBuilder<'a> {
-        MessageCollectorBuilder::new(shard_messenger).channel_id(self.id.0)
+    pub fn await_replies(&self, shard_messenger: impl AsRef<ShardMessenger>) -> MessageCollector {
+        self.await_reply(shard_messenger)
     }
 
-    /// Await a single reaction by this guild channel.
+    /// Returns a stream builder which can be awaited to obtain a reaction or stream of reactions sent by this guild channel.
     #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub fn await_reaction<'a>(
-        &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> CollectReaction<'a> {
-        CollectReaction::new(shard_messenger).channel_id(self.id.0)
+    pub fn await_reaction(&self, shard_messenger: impl AsRef<ShardMessenger>) -> ReactionCollector {
+        ReactionCollector::new(shard_messenger).channel_id(self.id)
     }
 
-    /// Returns a stream builder which can be awaited to obtain a stream of reactions sent by this guild channel.
+    /// Same as [`Self::await_reaction`].
     #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub fn await_reactions<'a>(
+    pub fn await_reactions(
         &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> ReactionCollectorBuilder<'a> {
-        ReactionCollectorBuilder::new(shard_messenger).channel_id(self.id.0)
+        shard_messenger: impl AsRef<ShardMessenger>,
+    ) -> ReactionCollector {
+        self.await_reaction(shard_messenger)
     }
 
-    /// Creates a webhook with only a name.
+    /// Creates a webhook in the channel.
     ///
     /// # Errors
     ///
-    /// Returns a [`ModelError::NameTooShort`] if the name of the webhook is
-    /// under the limit of 2 characters.
-    /// Returns a [`ModelError::NameTooLong`] if the name of the webhook is
-    /// over the limit of 100 characters.
-    /// Returns a [`ModelError::InvalidChannelType`] if the channel type is not text.
+    /// See [`CreateWebhook::execute`] for a detailed list of possible errors.
     pub async fn create_webhook(
         &self,
-        http: impl AsRef<Http>,
-        name: impl std::fmt::Display,
+        cache_http: impl CacheHttp,
+        builder: CreateWebhook<'_>,
     ) -> Result<Webhook> {
-        let name = name.to_string();
-
-        if name.len() < 2 {
-            return Err(Error::Model(ModelError::NameTooShort));
-        } else if name.len() > 100 {
-            return Err(Error::Model(ModelError::NameTooLong));
-        } else if !self.is_text_based() {
-            return Err(Error::Model(ModelError::InvalidChannelType));
-        }
-
-        self.id.create_webhook(&http, name).await
-    }
-
-    /// Creates a webhook with a name and an avatar.
-    ///
-    /// # Errors
-    ///
-    /// In addition to the reasons [`Self::create_webhook`] may return an [`Error::Http`],
-    /// if the image is too large.
-    pub async fn create_webhook_with_avatar<'a>(
-        &self,
-        http: impl AsRef<Http>,
-        name: impl std::fmt::Display,
-        avatar: impl Into<AttachmentType<'a>>,
-    ) -> Result<Webhook> {
-        let name = name.to_string();
-        let avatar = avatar.into();
-
-        if name.len() < 2 {
-            return Err(Error::Model(ModelError::NameTooShort));
-        } else if name.len() > 100 {
-            return Err(Error::Model(ModelError::NameTooLong));
-        } else if !self.is_text_based() {
-            return Err(Error::Model(ModelError::InvalidChannelType));
-        }
-
-        self.id.create_webhook_with_avatar(&http, name, avatar).await
+        self.id.create_webhook(cache_http, builder).await
     }
 
     /// Gets a stage instance.
@@ -1202,7 +1096,7 @@ impl GuildChannel {
     /// Returns [`ModelError::InvalidChannelType`] if the channel is not a stage channel.
     /// Returns [`Error::Http`] if there is no stage instance currently.
     pub async fn get_stage_instance(&self, http: impl AsRef<Http>) -> Result<StageInstance> {
-        if self.kind.num() != 13 {
+        if self.kind != ChannelType::Stage {
             return Err(Error::Model(ModelError::InvalidChannelType));
         }
 
@@ -1214,41 +1108,30 @@ impl GuildChannel {
     /// # Errors
     ///
     /// Returns [`ModelError::InvalidChannelType`] if the channel is not a stage channel.
+    ///
     /// Returns [`Error::Http`] if there is already a stage instance currently.
-    pub async fn create_stage_instance<F>(
+    pub async fn create_stage_instance(
         &self,
-        http: impl AsRef<Http>,
-        f: F,
-    ) -> Result<StageInstance>
-    where
-        F: FnOnce(&mut CreateStageInstance) -> &mut CreateStageInstance,
-    {
-        if self.kind.num() != 13 {
-            return Err(Error::Model(ModelError::InvalidChannelType));
-        }
-
-        self.id.create_stage_instance(http, f).await
+        cache_http: impl CacheHttp,
+        builder: CreateStageInstance<'_>,
+    ) -> Result<StageInstance> {
+        self.id.create_stage_instance(cache_http, builder).await
     }
 
-    /// Edits a stage instance.
+    /// Edits the stage instance
     ///
     /// # Errors
     ///
     /// Returns [`ModelError::InvalidChannelType`] if the channel is not a stage channel.
-    /// Returns [`Error::Http`] if there is no stage instance currently.
-    pub async fn edit_stage_instance<F>(
+    ///
+    /// Returns [`Error::Http`] if the channel is not a stage channel, or there is no stage
+    /// instance currently.
+    pub async fn edit_stage_instance(
         &self,
-        http: impl AsRef<Http>,
-        f: F,
-    ) -> Result<StageInstance>
-    where
-        F: FnOnce(&mut EditStageInstance) -> &mut EditStageInstance,
-    {
-        if self.kind.num() != 13 {
-            return Err(Error::Model(ModelError::InvalidChannelType));
-        }
-
-        self.id.edit_stage_instance(http, f).await
+        cache_http: impl CacheHttp,
+        builder: EditStageInstance<'_>,
+    ) -> Result<StageInstance> {
+        self.id.edit_stage_instance(cache_http, builder).await
     }
 
     /// Deletes a stage instance.
@@ -1258,31 +1141,60 @@ impl GuildChannel {
     /// Returns [`ModelError::InvalidChannelType`] if the channel is not a stage channel.
     /// Returns [`Error::Http`] if there is no stage instance currently.
     pub async fn delete_stage_instance(&self, http: impl AsRef<Http>) -> Result<()> {
-        if self.kind.num() != 13 {
+        if self.kind != ChannelType::Stage {
             return Err(Error::Model(ModelError::InvalidChannelType));
         }
 
         self.id.delete_stage_instance(http).await
     }
+
+    /// Creates a public thread that is connected to a message.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Http`] if the current user lacks permission, or if invalid data is given.
+    pub async fn create_public_thread(
+        &self,
+        http: impl AsRef<Http>,
+        message_id: impl Into<MessageId>,
+        builder: CreateThread<'_>,
+    ) -> Result<GuildChannel> {
+        self.id.create_public_thread(http, message_id, builder).await
+    }
+
+    /// Creates a private thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Http`] if the current user lacks permission, or if invalid data is given.
+    pub async fn create_private_thread(
+        &self,
+        http: impl AsRef<Http>,
+        builder: CreateThread<'_>,
+    ) -> Result<GuildChannel> {
+        self.id.create_private_thread(http, builder).await
+    }
 }
 
-impl Display for GuildChannel {
+impl fmt::Display for GuildChannel {
     /// Formats the channel, creating a mention of it.
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        Display::fmt(&self.id.mention(), f)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.id.mention(), f)
     }
 }
 
 /// A partial guild channel.
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/channel#channel-object),
+/// [subset description](https://discord.com/developers/docs/topics/gateway#thread-delete)
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PartialGuildChannel {
     /// The channel Id.
     pub id: ChannelId,
     /// The channel guild Id.
     pub guild_id: GuildId,
-    /// The channel category Id.
-    #[serde(rename = "parent_id")]
-    pub category_id: ChannelId,
+    /// The channel category Id,  or the parent text channel Id for a thread.
+    pub parent_id: ChannelId,
     /// The channel type.
     #[serde(rename = "type")]
     pub kind: ChannelType,

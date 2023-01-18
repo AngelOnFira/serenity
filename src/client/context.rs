@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 
 use futures::channel::mpsc::UnboundedSender as Sender;
@@ -8,10 +9,7 @@ use typemap_rev::TypeMap;
 pub use crate::cache::Cache;
 #[cfg(feature = "gateway")]
 use crate::client::bridge::gateway::ShardMessenger;
-#[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-use crate::collector::ComponentInteractionFilter;
-#[cfg(feature = "collector")]
-use crate::collector::{MessageFilter, ReactionFilter};
+use crate::gateway::ActivityData;
 #[cfg(feature = "gateway")]
 use crate::gateway::InterMessage;
 use crate::http::Http;
@@ -41,10 +39,20 @@ pub struct Context {
     /// The messenger to communicate with the shard runner.
     pub shard: ShardMessenger,
     /// The ID of the shard this context is related to.
-    pub shard_id: u64,
+    pub shard_id: u32,
     pub http: Arc<Http>,
     #[cfg(feature = "cache")]
     pub cache: Arc<Cache>,
+}
+
+// Used by the #[instrument] macro on client::dispatch::handle_event
+impl fmt::Debug for Context {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Context")
+            .field("shard", &self.shard)
+            .field("shard_id", &self.shard_id)
+            .finish()
+    }
 }
 
 impl Context {
@@ -53,7 +61,7 @@ impl Context {
     pub(crate) fn new(
         data: Arc<RwLock<TypeMap>>,
         runner_tx: Sender<InterMessage>,
-        shard_id: u64,
+        shard_id: u32,
         http: Arc<Http>,
         cache: Arc<Cache>,
     ) -> Context {
@@ -67,7 +75,7 @@ impl Context {
     }
 
     #[cfg(all(not(feature = "cache"), not(feature = "gateway")))]
-    pub fn easy(data: Arc<RwLock<TypeMap>>, shard_id: u64, http: Arc<Http>) -> Context {
+    pub fn easy(data: Arc<RwLock<TypeMap>>, shard_id: u32, http: Arc<Http>) -> Context {
         Context {
             shard_id,
             data,
@@ -80,7 +88,7 @@ impl Context {
     pub(crate) fn new(
         data: Arc<RwLock<TypeMap>>,
         runner_tx: Sender<InterMessage>,
-        shard_id: u64,
+        shard_id: u32,
         http: Arc<Http>,
     ) -> Context {
         Context {
@@ -108,13 +116,14 @@ impl Context {
     /// impl EventHandler for Handler {
     ///     async fn message(&self, ctx: Context, msg: Message) {
     ///         if msg.content == "!online" {
-    ///             ctx.online().await;
+    ///             ctx.online();
     ///         }
     ///     }
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client = Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
@@ -124,7 +133,7 @@ impl Context {
     /// [`Online`]: OnlineStatus::Online
     #[cfg(feature = "gateway")]
     #[inline]
-    pub async fn online(&self) {
+    pub fn online(&self) {
         self.shard.set_status(OnlineStatus::Online);
     }
 
@@ -145,13 +154,14 @@ impl Context {
     /// impl EventHandler for Handler {
     ///     async fn message(&self, ctx: Context, msg: Message) {
     ///         if msg.content == "!idle" {
-    ///             ctx.idle().await;
+    ///             ctx.idle();
     ///         }
     ///     }
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client = Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
@@ -161,7 +171,7 @@ impl Context {
     /// [`Idle`]: OnlineStatus::Idle
     #[cfg(feature = "gateway")]
     #[inline]
-    pub async fn idle(&self) {
+    pub fn idle(&self) {
         self.shard.set_status(OnlineStatus::Idle);
     }
 
@@ -182,13 +192,14 @@ impl Context {
     /// impl EventHandler for Handler {
     ///     async fn message(&self, ctx: Context, msg: Message) {
     ///         if msg.content == "!dnd" {
-    ///             ctx.dnd().await;
+    ///             ctx.dnd();
     ///         }
     ///     }
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client = Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
@@ -198,7 +209,7 @@ impl Context {
     /// [`DoNotDisturb`]: OnlineStatus::DoNotDisturb
     #[cfg(feature = "gateway")]
     #[inline]
-    pub async fn dnd(&self) {
+    pub fn dnd(&self) {
         self.shard.set_status(OnlineStatus::DoNotDisturb);
     }
 
@@ -219,12 +230,13 @@ impl Context {
     /// #[serenity::async_trait]
     /// impl EventHandler for Handler {
     ///     async fn ready(&self, ctx: Context, _: Ready) {
-    ///         ctx.invisible().await;
+    ///         ctx.invisible();
     ///     }
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client = Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
@@ -235,7 +247,7 @@ impl Context {
     /// [`Invisible`]: OnlineStatus::Invisible
     #[cfg(feature = "gateway")]
     #[inline]
-    pub async fn invisible(&self) {
+    pub fn invisible(&self) {
         self.shard.set_status(OnlineStatus::Invisible);
     }
 
@@ -257,12 +269,13 @@ impl Context {
     /// #[serenity::async_trait]
     /// impl EventHandler for Handler {
     ///     async fn resume(&self, ctx: Context, _: ResumedEvent) {
-    ///         ctx.reset_presence().await;
+    ///         ctx.reset_presence();
     ///     }
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client = Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
@@ -273,11 +286,11 @@ impl Context {
     /// [`Online`]: OnlineStatus::Online
     #[cfg(feature = "gateway")]
     #[inline]
-    pub async fn reset_presence(&self) {
-        self.shard.set_presence(None::<Activity>, OnlineStatus::Online);
+    pub fn reset_presence(&self) {
+        self.shard.set_presence(None, OnlineStatus::Online);
     }
 
-    /// Sets the current activity, defaulting to an online status of [`Online`].
+    /// Sets the current activity.
     ///
     /// # Examples
     ///
@@ -288,7 +301,7 @@ impl Context {
     /// # use serenity::prelude::*;
     /// # use serenity::model::channel::Message;
     /// #
-    /// use serenity::model::gateway::Activity;
+    /// use serenity::gateway::ActivityData;
     ///
     /// struct Handler;
     ///
@@ -298,24 +311,23 @@ impl Context {
     ///         let mut args = msg.content.splitn(2, ' ');
     ///
     ///         if let (Some("~setgame"), Some(game)) = (args.next(), args.next()) {
-    ///             ctx.set_activity(Activity::playing(game)).await;
+    ///             ctx.set_activity(Some(ActivityData::playing(game)));
     ///         }
     ///     }
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client = Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
     /// # }
     /// ```
-    ///
-    /// [`Online`]: OnlineStatus::Online
     #[cfg(feature = "gateway")]
     #[inline]
-    pub async fn set_activity(&self, activity: Activity) {
-        self.shard.set_presence(Some(activity), OnlineStatus::Online);
+    pub fn set_activity(&self, activity: Option<ActivityData>) {
+        self.shard.set_activity(activity);
     }
 
     /// Sets the current user's presence, providing all fields to be passed.
@@ -340,7 +352,8 @@ impl Context {
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client = Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
@@ -359,10 +372,10 @@ impl Context {
     /// #[serenity::async_trait]
     /// impl EventHandler for Handler {
     ///     async fn ready(&self, context: Context, _: Ready) {
-    ///         use serenity::model::gateway::Activity;
+    ///         use serenity::gateway::ActivityData;
     ///         use serenity::model::user::OnlineStatus;
     ///
-    ///         let activity = Activity::playing("Heroes of the Storm");
+    ///         let activity = ActivityData::playing("Heroes of the Storm");
     ///         let status = OnlineStatus::DoNotDisturb;
     ///
     ///         context.set_presence(Some(activity), status);
@@ -370,7 +383,8 @@ impl Context {
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client = Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
@@ -381,35 +395,8 @@ impl Context {
     /// [`Idle`]: OnlineStatus::Idle
     #[cfg(feature = "gateway")]
     #[inline]
-    pub async fn set_presence(&self, activity: Option<Activity>, status: OnlineStatus) {
+    pub fn set_presence(&self, activity: Option<ActivityData>, status: OnlineStatus) {
         self.shard.set_presence(activity, status);
-    }
-
-    /// Sets a new `filter` for the shard to check if a message event shall be
-    /// sent back to `filter`'s paired receiver.
-    #[inline]
-    #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub async fn set_message_filter(&self, filter: MessageFilter) {
-        self.shard.set_message_filter(filter);
-    }
-
-    /// Sets a new `filter` for the shard to check if a reaction event shall be
-    /// sent back to `filter`'s paired receiver.
-    #[inline]
-    #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub async fn set_reaction_filter(&self, filter: ReactionFilter) {
-        self.shard.set_reaction_filter(filter);
-    }
-
-    /// Sets a new `filter` for the shard to check if an interaction event shall be
-    /// sent back to `filter`'s paired receiver.
-    #[inline]
-    #[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-    #[cfg_attr(docsrs, doc(cfg(all(feature = "unstable_discord_api", feature = "collector"))))]
-    pub async fn set_component_interaction_filter(&self, filter: ComponentInteractionFilter) {
-        self.shard.set_component_interaction_filter(filter);
     }
 }
 
@@ -441,7 +428,7 @@ impl AsRef<Cache> for Context {
 #[cfg(feature = "cache")]
 impl AsRef<Cache> for Arc<Context> {
     fn as_ref(&self) -> &Cache {
-        &*self.cache
+        &self.cache
     }
 }
 

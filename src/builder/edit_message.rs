@@ -1,10 +1,19 @@
-use std::collections::HashMap;
-
-use super::CreateEmbed;
-#[cfg(feature = "unstable_discord_api")]
-use crate::builder::CreateComponents;
+use super::{
+    CreateActionRow,
+    CreateAllowedMentions,
+    CreateAttachment,
+    CreateEmbed,
+    ExistingAttachment,
+};
+#[cfg(feature = "http")]
+use crate::constants;
+#[cfg(feature = "http")]
+use crate::http::Http;
+#[cfg(feature = "http")]
 use crate::internal::prelude::*;
-use crate::utils;
+use crate::model::prelude::*;
+#[cfg(feature = "http")]
+use crate::utils::check_overflow;
 
 /// A builder to specify the fields to edit in an existing message.
 ///
@@ -13,6 +22,7 @@ use crate::utils;
 /// Editing the content of a [`Message`] to `"hello"`:
 ///
 /// ```rust,no_run
+/// # use serenity::builder::EditMessage;
 /// # use serenity::model::id::{ChannelId, MessageId};
 /// # #[cfg(feature = "client")]
 /// # use serenity::client::Context;
@@ -22,127 +32,191 @@ use crate::utils;
 /// # #[cfg(all(feature = "model", feature = "utils", feature = "framework"))]
 /// # #[command]
 /// # async fn example(ctx: &Context) -> CommandResult {
-/// # let mut message = ChannelId(7).message(&ctx, MessageId(8)).await?;
-/// message.edit(ctx, |m| {
-///     m.content("hello")
-/// })
-/// .await?;
+/// # let mut message = ChannelId::new(7).message(&ctx, MessageId::new(8)).await?;
+/// let builder = EditMessage::new().content("hello");
+/// message.edit(ctx, builder).await?;
 /// # Ok(())
 /// # }
 /// ```
 ///
 /// [`Message`]: crate::model::channel::Message
-#[derive(Clone, Debug, Default)]
-pub struct EditMessage(pub HashMap<&'static str, Value>);
+#[derive(Clone, Debug, Default, Serialize)]
+#[must_use]
+pub struct EditMessage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embeds: Option<Vec<CreateEmbed>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flags: Option<MessageFlags>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed_mentions: Option<CreateAllowedMentions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    components: Option<Vec<CreateActionRow>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attachments: Option<Vec<ExistingAttachment>>,
+
+    #[serde(skip)]
+    files: Vec<CreateAttachment>,
+}
 
 impl EditMessage {
+    /// Equivalent to [`Self::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Edits a message in the channel.
+    ///
+    /// **Note**: Message contents must be under 2000 unicode code points, and embeds must be under
+    /// 6000 code points.
+    ///
+    /// **Note**: Requires that the current user be the author of the message. Other users can
+    /// only call [`Self::suppress_embeds`], but additionally require the [Manage Messages]
+    /// permission to do so.
+    ///
+    /// **Note**: If any embeds or attachments are set, they will overwrite the existing contents
+    /// of the message, deleting existing embeds and attachments. Preserving them requires calling
+    /// [`Self::add_existing_attachment`] in the case of attachments. In the case of embeds,
+    /// duplicate copies of the existing embeds must be sent. Luckily, [`CreateEmbed`] implements
+    /// [`From<Embed>`], so one can simply call `embed.into()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ModelError::MessageTooLong`] if the message contents are over the above limits.
+    ///
+    /// Returns [`Error::Http`] if the user lacks permission, as well as if invalid data is given.
+    ///
+    /// [Manage Messages]: Permissions::MANAGE_MESSAGES
+    /// [`From<Embed>`]: CreateEmbed#impl-From<Embed>
+    #[cfg(feature = "http")]
+    pub async fn execute(
+        mut self,
+        http: impl AsRef<Http>,
+        channel_id: ChannelId,
+        message_id: MessageId,
+    ) -> Result<Message> {
+        self.check_length()?;
+        let files = std::mem::take(&mut self.files);
+        http.as_ref().edit_message(channel_id, message_id, &self, files).await
+    }
+
+    #[cfg(feature = "http")]
+    fn check_length(&self) -> Result<()> {
+        if let Some(content) = &self.content {
+            check_overflow(content.chars().count(), constants::MESSAGE_CODE_LIMIT)
+                .map_err(|overflow| Error::Model(ModelError::MessageTooLong(overflow)))?;
+        }
+
+        if let Some(embeds) = &self.embeds {
+            check_overflow(embeds.len(), constants::EMBED_MAX_COUNT)
+                .map_err(|_| Error::Model(ModelError::EmbedAmount))?;
+            for embed in embeds {
+                embed.check_length()?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Set the content of the message.
     ///
     /// **Note**: Message contents must be under 2000 unicode code points.
     #[inline]
-    pub fn content<D: ToString>(&mut self, content: D) -> &mut Self {
-        self.0.insert("content", Value::String(content.to_string()));
-        self
-    }
-
-    fn _add_embed(&mut self, embed: CreateEmbed) -> &mut Self {
-        let map = utils::hashmap_to_json_map(embed.0);
-        let embed = Value::Object(map);
-
-        let embeds = self.0.entry("embeds").or_insert_with(|| Value::Array(Vec::new()));
-        let embeds_array = embeds.as_array_mut().expect("Embeds must be an array");
-
-        embeds_array.push(embed);
-
+    pub fn content(mut self, content: impl Into<String>) -> Self {
+        self.content = Some(content.into());
         self
     }
 
     /// Add an embed for the message.
     ///
-    /// **Note**: This will keep all existing embeds. Use [`Self::set_embed()`] to replace existing
+    /// **Note**: This will keep all existing embeds. Use [`Self::embed()`] to replace existing
     /// embeds.
-    pub fn add_embed<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut CreateEmbed) -> &mut CreateEmbed,
-    {
-        let mut embed = CreateEmbed::default();
-        f(&mut embed);
-        self._add_embed(embed)
+    pub fn add_embed(mut self, embed: CreateEmbed) -> Self {
+        self.embeds.get_or_insert_with(Vec::new).push(embed);
+        self
     }
 
     /// Add multiple embeds for the message.
     ///
-    /// **Note**: This will keep all existing embeds. Use [`Self::set_embeds()`] to replace existing
+    /// **Note**: This will keep all existing embeds. Use [`Self::embeds()`] to replace existing
     /// embeds.
-    pub fn add_embeds(&mut self, embeds: Vec<CreateEmbed>) -> &mut Self {
-        for embed in embeds {
-            self._add_embed(embed);
-        }
-
+    pub fn add_embeds(mut self, embeds: Vec<CreateEmbed>) -> Self {
+        self.embeds.get_or_insert_with(Vec::new).extend(embeds);
         self
     }
 
     /// Set an embed for the message.
     ///
-    /// Equivalent to [`Self::set_embed()`].
-    ///
-    /// **Note**: This will replace all existing embeds. Use
-    /// [`Self::add_embed()`] to add an additional embed.
-    pub fn embed<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut CreateEmbed) -> &mut CreateEmbed,
-    {
-        let mut embed = CreateEmbed::default();
-        f(&mut embed);
-        self.0.insert("embeds", Value::Array(Vec::new()));
-        self._add_embed(embed)
-    }
-
-    /// Set an embed for the message.
-    ///
-    /// Equivalent to [`Self::embed()`].
-    ///
-    /// **Note**: This will replace all existing embeds.
-    /// Use [`Self::add_embed()`] to add an additional embed.
-    pub fn set_embed(&mut self, embed: CreateEmbed) -> &mut Self {
-        self.0.insert("embeds", Value::Array(Vec::new()));
-        self._add_embed(embed)
+    /// **Note**: This will replace all existing embeds. Use [`Self::add_embed()`] to keep existing
+    /// embeds.
+    pub fn embed(self, embed: CreateEmbed) -> Self {
+        self.embeds(vec![embed])
     }
 
     /// Set multiple embeds for the message.
     ///
     /// **Note**: This will replace all existing embeds. Use [`Self::add_embeds()`] to keep existing
     /// embeds.
-    pub fn set_embeds(&mut self, embeds: Vec<CreateEmbed>) -> &mut Self {
-        self.0.insert("embeds", Value::Array(Vec::new()));
-        for embed in embeds {
-            self._add_embed(embed);
-        }
-
+    pub fn embeds(mut self, embeds: Vec<CreateEmbed>) -> Self {
+        self.embeds = Some(embeds);
         self
     }
 
     /// Suppress or unsuppress embeds in the message, this includes those generated by Discord
     /// themselves.
-    pub fn suppress_embeds(&mut self, suppress: bool) -> &mut Self {
-        // `1 << 2` is defined by the API to be the SUPPRESS_EMBEDS flag.
-        // At the time of writing, the only accepted value in "flags" is `SUPPRESS_EMBEDS` for editing messages.
-        let flags = if suppress { 1 << 2 } else { 0 };
-        self.0.insert("flags", serde_json::Value::Number(serde_json::Number::from(flags)));
+    pub fn suppress_embeds(mut self, suppress: bool) -> Self {
+        // At time of writing, only `SUPPRESS_EMBEDS` can be set/unset when editing messages. See
+        // for details: https://discord.com/developers/docs/resources/channel#edit-message-jsonform-params
+        let flags =
+            suppress.then_some(MessageFlags::SUPPRESS_EMBEDS).unwrap_or_else(MessageFlags::empty);
 
+        self.flags = Some(flags);
+        self
+    }
+
+    /// Set the allowed mentions for the message.
+    pub fn allowed_mentions(mut self, allowed_mentions: CreateAllowedMentions) -> Self {
+        self.allowed_mentions = Some(allowed_mentions);
         self
     }
 
     /// Sets the components of this message.
-    #[cfg(feature = "unstable_discord_api")]
-    pub fn components<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut CreateComponents) -> &mut CreateComponents,
-    {
-        let mut components = CreateComponents::default();
-        f(&mut components);
+    pub fn components(mut self, components: Vec<CreateActionRow>) -> Self {
+        self.components = Some(components);
+        self
+    }
+    super::button_and_select_menu_convenience_methods!();
 
-        self.0.insert("components", Value::Array(components.0));
+    /// Sets the flags for the message.
+    pub fn flags(mut self, flags: MessageFlags) -> Self {
+        self.flags = Some(flags);
+        self
+    }
+
+    /// Add a new attachment for the message.
+    ///
+    /// This can be called multiple times.
+    pub fn attachment(mut self, attachment: CreateAttachment) -> Self {
+        self.files.push(attachment);
+        self
+    }
+
+    /// Add an existing attachment by id.
+    pub fn add_existing_attachment(mut self, id: AttachmentId) -> Self {
+        self.attachments.get_or_insert_with(Vec::new).push(ExistingAttachment {
+            id,
+        });
+        self
+    }
+
+    /// Remove an existing attachment by id.
+    pub fn remove_existing_attachment(mut self, id: AttachmentId) -> Self {
+        if let Some(attachments) = &mut self.attachments {
+            if let Some(attachment_index) = attachments.iter().position(|a| a.id == id) {
+                attachments.remove(attachment_index);
+            };
+        }
         self
     }
 }

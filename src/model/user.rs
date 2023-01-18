@@ -3,45 +3,176 @@
 use std::fmt;
 #[cfg(feature = "model")]
 use std::fmt::Write;
+#[cfg(feature = "temp_cache")]
+use std::sync::Arc;
 
-use bitflags::__impl_bitflags;
-use futures::future::{BoxFuture, FutureExt};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-#[cfg(feature = "model")]
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 
 use super::prelude::*;
-use super::utils::deserialize_u16;
 #[cfg(feature = "model")]
 use crate::builder::{CreateBotAuthParameters, CreateMessage, EditProfile};
 #[cfg(all(feature = "cache", feature = "model"))]
-use crate::cache::Cache;
+use crate::cache::{Cache, UserRef};
 #[cfg(feature = "collector")]
 use crate::client::bridge::gateway::ShardMessenger;
 #[cfg(feature = "collector")]
-use crate::collector::{
-    CollectReaction,
-    CollectReply,
-    MessageCollectorBuilder,
-    ReactionCollectorBuilder,
-};
+use crate::collector::{MessageCollector, ReactionCollector};
 #[cfg(feature = "model")]
 use crate::http::GuildPagination;
 #[cfg(feature = "model")]
 use crate::http::{CacheHttp, Http};
+use crate::internal::prelude::*;
 #[cfg(feature = "model")]
-use crate::utils;
-use crate::{internal::prelude::*, model::misc::Mentionable};
+use crate::json::json;
+use crate::json::to_string;
+#[cfg(feature = "model")]
+use crate::model::application::Scope;
+use crate::model::mention::Mentionable;
+
+/// Used with `#[serde(with|deserialize_with|serialize_with)]`
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// #[derive(Deserialize, Serialize)]
+/// struct A {
+///     #[serde(with = "discriminator")]
+///     id: u16,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct B {
+///     #[serde(deserialize_with = "discriminator::deserialize")]
+///     id: u16,
+/// }
+///
+/// #[derive(Serialize)]
+/// struct C {
+///     #[serde(serialize_with = "discriminator::serialize")]
+///     id: u16,
+/// }
+/// ```
+pub(crate) mod discriminator {
+    use std::convert::TryFrom;
+    use std::fmt;
+
+    use serde::de::{Error, Visitor};
+    use serde::{Deserializer, Serializer};
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> {
+        deserializer.deserialize_any(DiscriminatorVisitor)
+    }
+
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    pub fn serialize<S: Serializer>(value: &u16, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("{value:04}"))
+    }
+
+    struct DiscriminatorVisitor;
+
+    impl<'de> Visitor<'de> for DiscriminatorVisitor {
+        type Value = u16;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("string or integer discriminator")
+        }
+
+        fn visit_u64<E: Error>(self, value: u64) -> Result<Self::Value, E> {
+            u16::try_from(value).map_err(Error::custom)
+        }
+
+        fn visit_str<E: Error>(self, s: &str) -> Result<Self::Value, E> {
+            s.parse().map_err(Error::custom)
+        }
+    }
+
+    /// Used with `#[serde(with|deserialize_with|serialize_with)]`
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// #[derive(Deserialize, Serialize)]
+    /// struct A {
+    ///     #[serde(with = "discriminator::option")]
+    ///     id: Option<u16>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct B {
+    ///     #[serde(deserialize_with = "discriminator::option::deserialize")]
+    ///     id: Option<u16>,
+    /// }
+    ///
+    /// #[derive(Serialize)]
+    /// struct C {
+    ///     #[serde(serialize_with = "discriminator::option::serialize")]
+    ///     id: Option<u16>,
+    /// }
+    /// ```
+    pub(crate) mod option {
+        use std::fmt;
+
+        use serde::de::{Error, Visitor};
+        use serde::{Deserializer, Serializer};
+
+        use super::DiscriminatorVisitor;
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<u16>, D::Error> {
+            deserializer.deserialize_option(OptionalDiscriminatorVisitor)
+        }
+
+        #[allow(clippy::trivially_copy_pass_by_ref)]
+        pub fn serialize<S: Serializer>(
+            value: &Option<u16>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            match value {
+                Some(value) => serializer.serialize_some(&format_args!("{value:04}")),
+                None => serializer.serialize_none(),
+            }
+        }
+
+        struct OptionalDiscriminatorVisitor;
+
+        impl<'de> Visitor<'de> for OptionalDiscriminatorVisitor {
+            type Value = Option<u16>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("optional string or integer discriminator")
+            }
+
+            fn visit_none<E: Error>(self) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_some<D: Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                Ok(Some(deserializer.deserialize_any(DiscriminatorVisitor)?))
+            }
+        }
+    }
+}
 
 /// Information about the current user.
-#[derive(Clone, Default, Debug, Deserialize, Serialize)]
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/user#user-object).
+// TODO: replace this with User
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct CurrentUser {
     pub id: UserId,
     pub avatar: Option<String>,
     #[serde(default)]
     pub bot: bool,
-    #[serde(deserialize_with = "deserialize_u16")]
+    #[serde(with = "discriminator")]
     pub discriminator: u16,
     pub email: Option<String>,
     pub mfa_enabled: bool,
@@ -49,6 +180,8 @@ pub struct CurrentUser {
     pub name: String,
     pub verified: Option<bool>,
     pub public_flags: Option<UserPublicFlags>,
+    pub banner: Option<String>,
+    pub accent_colour: Option<Colour>,
 }
 
 #[cfg(feature = "model")]
@@ -63,22 +196,21 @@ impl CurrentUser {
     ///
     /// ```rust,no_run
     /// # #[cfg(feature = "cache")]
-    /// # async fn run() {
+    /// # fn run() {
     /// # use serenity::cache::Cache;
-    /// # use tokio::sync::RwLock;
-    /// # use std::sync::Arc;
     /// #
     /// # let cache = Cache::default();
     /// // assuming the cache has been unlocked
-    /// let user = cache.current_user().await;
+    /// let user = cache.current_user();
     ///
     /// match user.avatar_url() {
     ///     Some(url) => println!("{}'s avatar can be found at {}", user.name, url),
-    ///     None => println!("{} does not have an avatar set.", user.name)
+    ///     None => println!("{} does not have an avatar set.", user.name),
     /// }
     /// # }
     /// ```
     #[inline]
+    #[must_use]
     pub fn avatar_url(&self) -> Option<String> {
         avatar_url(self.id, self.avatar.as_ref())
     }
@@ -87,6 +219,7 @@ impl CurrentUser {
     ///
     /// This will produce a PNG URL.
     #[inline]
+    #[must_use]
     pub fn default_avatar_url(&self) -> String {
         default_avatar_url(self.discriminator)
     }
@@ -102,46 +235,25 @@ impl CurrentUser {
     /// Change the avatar:
     ///
     /// ```rust,no_run
+    /// # use serenity::builder::{EditProfile, CreateAttachment};
     /// # use serenity::http::Http;
     /// # use serenity::model::user::CurrentUser;
     /// #
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// #     let http = Http::default();
+    /// #     let http = Http::new("token");
     /// #     let mut user = CurrentUser::default();
-    /// let avatar = serenity::utils::read_image("./avatar.png")?;
-    ///
-    /// user.edit(&http, |p| p.avatar(Some(&avatar))).await;
+    /// let avatar = CreateAttachment::path("./avatar.png").await?;
+    /// user.edit(&http, EditProfile::new().avatar(&avatar)).await;
     /// #     Ok(())
     /// # }
     /// ```
     ///
-    /// [`EditProfile`]: crate::builder::EditProfile
-    ///
     /// # Errors
     ///
-    /// Returns an [`Error::Http`] if an invalid value is set.
-    /// May also return an [`Error::Json`] if there is an error in
-    /// deserializing the API response.
-    ///
-    /// [`Error::Http`]: crate::error::Error::Http
-    /// [`Error::Json`]: crate::error::Error::Json
-    pub async fn edit<F>(&mut self, http: impl AsRef<Http>, f: F) -> Result<()>
-    where
-        F: FnOnce(&mut EditProfile) -> &mut EditProfile,
-    {
-        let mut map = HashMap::new();
-        map.insert("username", Value::String(self.name.clone()));
-
-        if let Some(email) = self.email.as_ref() {
-            map.insert("email", Value::String(email.clone()));
-        }
-
-        let mut edit_profile = EditProfile(map);
-        f(&mut edit_profile);
-        let map = utils::hashmap_to_json_map(edit_profile.0);
-
-        *self = http.as_ref().edit_profile(&map).await?;
-
+    /// Returns an [`Error::Http`] if an invalid value is set. May also return an [`Error::Json`]
+    /// if there is an error in deserializing the API response.
+    pub async fn edit(&mut self, http: impl AsRef<Http>, builder: EditProfile) -> Result<()> {
+        *self = builder.execute(http).await?;
         Ok(())
     }
 
@@ -151,6 +263,7 @@ impl CurrentUser {
     /// This will call [`Self::avatar_url`] first, and if that returns [`None`], it
     /// then falls back to [`Self::default_avatar_url`].
     #[inline]
+    #[must_use]
     pub fn face(&self) -> String {
         self.avatar_url().unwrap_or_else(|| self.default_avatar_url())
     }
@@ -167,7 +280,7 @@ impl CurrentUser {
     /// #
     /// # async fn run() {
     /// #     let user = CurrentUser::default();
-    /// #     let http = Http::default();
+    /// #     let http = Http::new("token");
     /// // assuming the user has been bound
     ///
     /// if let Ok(guilds) = user.guilds(&http).await {
@@ -183,17 +296,16 @@ impl CurrentUser {
     /// May return an [`Error::Http`] if the Discord API returns an error.
     /// Also can return [`Error::Json`] if there is an error in deserializing
     /// the data returned by the API.
-    ///
-    /// [`Error::Http`]: crate::error::Error::Http
-    /// [`Error::Json`]: crate::error::Error::Json
     pub async fn guilds(&self, http: impl AsRef<Http>) -> Result<Vec<GuildInfo>> {
         let mut guilds = Vec::new();
         loop {
             let mut pagination = http
                 .as_ref()
                 .get_guilds(
-                    &GuildPagination::After(guilds.last().map_or(GuildId(1), |g: &GuildInfo| g.id)),
-                    100,
+                    Some(GuildPagination::After(
+                        guilds.last().map_or(GuildId::new(1), |g: &GuildInfo| g.id),
+                    )),
+                    Some(100),
                 )
                 .await?;
             let len = pagination.len();
@@ -224,7 +336,7 @@ impl CurrentUser {
     /// #
     /// # async fn run() {
     /// #     let user = CurrentUser::default();
-    /// #     let http = Http::default();
+    /// #     let http = Http::new("token");
     /// use serenity::model::Permissions;
     ///
     /// // assuming the user has been bound
@@ -237,8 +349,11 @@ impl CurrentUser {
     ///     },
     /// };
     ///
-    /// assert_eq!(url, "https://discordapp.com/api/oauth2/authorize? \
-    ///                  client_id=249608697955745802&scope=bot");
+    /// assert_eq!(
+    ///     url,
+    ///     "https://discordapp.com/api/oauth2/authorize? \
+    ///                  client_id=249608697955745802&scope=bot"
+    /// );
     /// # }
     /// ```
     ///
@@ -250,11 +365,12 @@ impl CurrentUser {
     /// #
     /// # async fn run() {
     /// #     let user = CurrentUser::default();
-    /// #     let http = Http::default();
+    /// #     let http = Http::new("token");
     /// use serenity::model::Permissions;
     ///
     /// // assuming the user has been bound
-    /// let permissions = Permissions::READ_MESSAGES | Permissions::SEND_MESSAGES | Permissions::EMBED_LINKS;
+    /// let permissions =
+    ///     Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES | Permissions::EMBED_LINKS;
     /// let url = match user.invite_url(&http, permissions).await {
     ///     Ok(v) => v,
     ///     Err(why) => {
@@ -264,9 +380,11 @@ impl CurrentUser {
     ///     },
     /// };
     ///
-    /// assert_eq!(url,
-    /// "https://discordapp.
-    /// com/api/oauth2/authorize?client_id=249608697955745802&scope=bot&permissions=19456");
+    /// assert_eq!(
+    ///     url,
+    ///     "https://discordapp.
+    /// com/api/oauth2/authorize?client_id=249608697955745802&scope=bot&permissions=19456"
+    /// );
     /// # }
     /// ```
     ///
@@ -284,7 +402,7 @@ impl CurrentUser {
         http: impl AsRef<Http>,
         permissions: Permissions,
     ) -> Result<String> {
-        self.invite_url_with_oauth2_scopes(http, permissions, &[OAuth2Scope::Bot]).await
+        self.invite_url_with_oauth2_scopes(http, permissions, &[Scope::Bot]).await
     }
 
     /// Generate an invite url, but with custom scopes.
@@ -299,11 +417,11 @@ impl CurrentUser {
     /// #
     /// # async fn run() {
     /// #     let user = CurrentUser::default();
-    /// #     let http = Http::default();
+    /// #     let http = Http::new("token");
+    /// use serenity::model::application::Scope;
     /// use serenity::model::Permissions;
-    /// use serenity::model::oauth2::OAuth2Scope;
     ///
-    /// let scopes = vec![OAuth2Scope::Bot, OAuth2Scope::ApplicationsCommands];
+    /// let scopes = vec![Scope::Bot, Scope::ApplicationsCommands];
     ///
     /// // assuming the user has been bound
     /// let url = match user.invite_url_with_oauth2_scopes(&http, Permissions::empty(), &scopes).await {
@@ -315,10 +433,14 @@ impl CurrentUser {
     ///     },
     /// };
     ///
-    /// assert_eq!(url, "https://discordapp.com/api/oauth2/authorize? \
-    ///                  client_id=249608697955745802&scope=bot%20applications.commands");
+    /// assert_eq!(
+    ///     url,
+    ///     "https://discordapp.com/api/oauth2/authorize? \
+    ///                  client_id=249608697955745802&scope=bot%20applications.commands"
+    /// );
     /// # }
     /// ```
+    ///
     /// # Errors
     ///
     /// Returns an
@@ -332,13 +454,13 @@ impl CurrentUser {
         &self,
         http: impl AsRef<Http>,
         permissions: Permissions,
-        scopes: &[OAuth2Scope],
+        scopes: &[Scope],
     ) -> Result<String> {
-        let mut builder = CreateBotAuthParameters::default();
-
-        builder.permissions(permissions);
-        builder.auto_client_id(http).await?;
-        builder.scopes(scopes);
+        let builder = CreateBotAuthParameters::new()
+            .permissions(permissions)
+            .scopes(scopes)
+            .auto_client_id(http)
+            .await?;
 
         Ok(builder.build())
     }
@@ -360,11 +482,12 @@ impl CurrentUser {
     ///
     /// match user.static_avatar_url() {
     ///     Some(url) => println!("{}'s static avatar can be found at {}", user.name, url),
-    ///     None => println!("Could not get static avatar for {}.", user.name)
+    ///     None => println!("Could not get static avatar for {}.", user.name),
     /// }
     /// # }
     /// ```
     #[inline]
+    #[must_use]
     pub fn static_avatar_url(&self) -> Option<String> {
         static_avatar_url(self.id, self.avatar.as_ref())
     }
@@ -386,6 +509,7 @@ impl CurrentUser {
     /// # }
     /// ```
     #[inline]
+    #[must_use]
     pub fn tag(&self) -> String {
         tag(&self.name, self.discriminator)
     }
@@ -396,7 +520,7 @@ impl CurrentUser {
 /// The default avatar is calculated via the result of `discriminator % 5`.
 ///
 /// The has of the avatar can be retrieved via calling [`Self::name`] on the enum.
-#[derive(Copy, Clone, Debug, Deserialize, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 #[non_exhaustive]
 pub enum DefaultAvatar {
     /// The avatar when the result is `0`.
@@ -422,23 +546,17 @@ impl DefaultAvatar {
     /// # Errors
     ///
     /// May return a [`Error::Json`] if there is a serialization error.
-    ///
-    /// [`Error::Json`]: crate::error::Error::Json
     pub fn name(self) -> Result<String> {
-        serde_json::to_string(&self).map_err(From::from)
+        to_string(&self).map_err(From::from)
     }
 }
 
 /// The representation of a user's status.
 ///
-/// # Examples
-///
-/// - [`DoNotDisturb`];
-/// - [`Invisible`].
-///
-/// [`DoNotDisturb`]: OnlineStatus::DoNotDisturb
-/// [`Invisible`]: OnlineStatus::Invisible
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize)]
+/// [Discord docs](https://discord.com/developers/docs/topics/gateway#update-presence-status-types).
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize,
+)]
 #[non_exhaustive]
 pub enum OnlineStatus {
     #[serde(rename = "dnd")]
@@ -450,10 +568,12 @@ pub enum OnlineStatus {
     #[serde(rename = "offline")]
     Offline,
     #[serde(rename = "online")]
+    #[default]
     Online,
 }
 
 impl OnlineStatus {
+    #[must_use]
     pub fn name(&self) -> &str {
         match *self {
             OnlineStatus::DoNotDisturb => "dnd",
@@ -465,14 +585,10 @@ impl OnlineStatus {
     }
 }
 
-impl Default for OnlineStatus {
-    fn default() -> OnlineStatus {
-        OnlineStatus::Online
-    }
-}
-
 /// Information about a user.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/user#user-object).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct User {
     /// The unique Id of the user. Can be used to calculate the account's
@@ -485,97 +601,75 @@ pub struct User {
     pub bot: bool,
     /// The account's discriminator to differentiate the user from others with
     /// the same [`Self::name`]. The name+discriminator pair is always unique.
-    #[serde(deserialize_with = "deserialize_u16")]
+    #[serde(with = "discriminator")]
     pub discriminator: u16,
     /// The account's username. Changing username will trigger a discriminator
     /// change if the username+discriminator pair becomes non-unique.
     #[serde(rename = "username")]
     pub name: String,
-    /// the public flags on a user's account
+    /// The public flags on a user's account
     pub public_flags: Option<UserPublicFlags>,
+    /// Optional banner hash.
+    ///
+    /// **Note**: This will only be present if the user is fetched via Rest API,
+    /// e.g. with [`Http::get_user`].
+    pub banner: Option<String>,
+    /// The user's banner colour encoded as an integer representation of
+    /// hexadecimal colour code
+    ///
+    /// **Note**: This will only be present if the user is fetched via Rest API,
+    /// e.g. with [`Http::get_user`].
+    #[serde(rename = "accent_color")]
+    pub accent_colour: Option<Colour>,
+    /// Only included in [`Message::mentions`] for messages from the gateway.
+    ///
+    /// [Discord docs](https://discord.com/developers/docs/topics/gateway-events#message-create-message-create-extra-fields).
+    // Box required to avoid infinitely recursive types
+    pub member: Option<Box<PartialMember>>,
 }
 
-/// User's public flags
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct UserPublicFlags {
-    pub bits: u32,
-}
-
-__impl_bitflags! {
-    UserPublicFlags: u32 {
+bitflags! {
+    /// User's public flags
+    ///
+    /// [Discord docs](https://discord.com/developers/docs/resources/user#user-object-user-flags).
+    #[derive(Default)]
+    pub struct UserPublicFlags: u32 {
         /// User's flag as discord employee
-        DISCORD_EMPLOYEE = 0b0000_0000_0000_0000_0000_0000_0000_0001;
+        const DISCORD_EMPLOYEE = 1 << 0;
         /// User's flag as partnered server owner
-        PARTNERED_SERVER_OWNER = 0b0000_0000_0000_0000_0000_0000_0000_0010;
+        const PARTNERED_SERVER_OWNER = 1 << 1;
         /// User's flag as hypesquad events
-        HYPESQUAD_EVENTS = 0b0000_0000_0000_0000_0000_0000_0000_0100;
+        const HYPESQUAD_EVENTS = 1 << 2;
         /// User's flag as bug hunter level 1
-        BUG_HUNTER_LEVEL_1 = 0b0000_0000_0000_0000_0000_0000_0000_1000;
+        const BUG_HUNTER_LEVEL_1 = 1 << 3;
         /// User's flag as house bravery
-        HOUSE_BRAVERY = 0b0000_0000_0000_0000_0000_0000_0100_0000;
+        const HOUSE_BRAVERY = 1 << 6;
         /// User's flag as house brilliance
-        HOUSE_BRILLIANCE = 0b0000_0000_0000_0000_0000_0000_1000_0000;
+        const HOUSE_BRILLIANCE = 1 << 7;
         /// User's flag as house balance
-        HOUSE_BALANCE = 0b0000_0000_0000_0000_0000_0001_0000_0000;
+        const HOUSE_BALANCE = 1 << 8;
         /// User's flag as early supporter
-        EARLY_SUPPORTER = 0b0000_0000_0000_0000_0000_0010_0000_0000;
+        const EARLY_SUPPORTER = 1 << 9;
         /// User's flag as team user
-        TEAM_USER = 0b0000_0000_0000_0000_0000_0100_0000_0000;
+        const TEAM_USER = 1 << 10;
         /// User's flag as system
-        SYSTEM = 0b0000_0000_0000_0000_0001_0000_0000_0000;
+        const SYSTEM = 1 << 12;
         /// User's flag as bug hunter level 2
-        BUG_HUNTER_LEVEL_2 = 0b0000_0000_0000_0000_0100_0000_0000_0000;
+        const BUG_HUNTER_LEVEL_2 = 1 << 14;
         /// User's flag as verified bot
-        VERIFIED_BOT = 0b0000_0000_0000_0001_0000_0000_0000_0000;
+        const VERIFIED_BOT = 1 << 16;
         /// User's flag as early verified bot developer
-        EARLY_VERIFIED_BOT_DEVELOPER = 0b0000_0000_0000_0010_0000_0000_0000_0000;
+        const EARLY_VERIFIED_BOT_DEVELOPER = 1 << 17;
         /// User's flag as discord certified moderator
-        DISCORD_CERTIFIED_MODERATOR = 0b0000_0000_0000_0100_0000_0000_0000_0000;
-    }
-}
-
-impl<'de> Deserialize<'de> for UserPublicFlags {
-    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(UserPublicFlags::from_bits_truncate(deserializer.deserialize_u32(U32Visitor)?))
-    }
-}
-
-impl Serialize for UserPublicFlags {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_u32(self.bits())
-    }
-}
-
-impl Default for User {
-    /// Initializes a [`User`] with default values. Setting the following:
-    /// - **id** to `UserId(210)`
-    /// - **avatar** to `Some("abc")`
-    /// - **bot** to `true`.
-    /// - **discriminator** to `1432`.
-    /// - **name** to `"test"`.
-    /// - **public_flags** to [`None`].
-    fn default() -> Self {
-        User {
-            id: UserId(210),
-            avatar: Some("abc".to_string()),
-            bot: true,
-            discriminator: 1432,
-            name: "test".to_string(),
-            public_flags: None,
-        }
+        const DISCORD_CERTIFIED_MODERATOR = 1 << 18;
+        /// Bot's running with HTTP interactions
+        const BOT_HTTP_INTERACTIONS = 1 << 19;
+        /// User's flag as active developer
+        const ACTIVE_DEVELOPER = 1 << 22;
     }
 }
 
 use std::hash::{Hash, Hasher};
-
-#[cfg(feature = "model")]
-use chrono::{DateTime, Utc};
 
 impl PartialEq for User {
     fn eq(&self, other: &Self) -> bool {
@@ -597,8 +691,21 @@ impl User {
     ///
     /// This will produce a WEBP image URL, or GIF if the user has a GIF avatar.
     #[inline]
+    #[must_use]
     pub fn avatar_url(&self) -> Option<String> {
         avatar_url(self.id, self.avatar.as_ref())
+    }
+
+    /// Returns the formatted URL of the user's banner, if one exists.
+    ///
+    /// This will produce a WEBP image URL, or GIF if the user has a GIF banner.
+    ///
+    /// **Note**: This will only be present if the user is fetched via Rest API,
+    /// e.g. with [`Http::get_user`].
+    #[inline]
+    #[must_use]
+    pub fn banner_url(&self) -> Option<String> {
+        banner_url(self.id, self.banner.as_ref())
     }
 
     /// Creates a direct message channel between the [current user] and the
@@ -609,8 +716,6 @@ impl User {
     /// # Errors
     ///
     /// See [`UserId::create_dm_channel`] for what errors may be returned.
-    ///
-    /// [`UserId::create_dm_channel`]: crate::model::id::UserId::create_dm_channel
     #[inline]
     pub async fn create_dm_channel(&self, cache_http: impl CacheHttp) -> Result<PrivateChannel> {
         if self.bot {
@@ -622,7 +727,8 @@ impl User {
 
     /// Retrieves the time that this user was created at.
     #[inline]
-    pub fn created_at(&self) -> DateTime<Utc> {
+    #[must_use]
+    pub fn created_at(&self) -> Timestamp {
         self.id.created_at()
     }
 
@@ -630,12 +736,13 @@ impl User {
     ///
     /// This will produce a PNG URL.
     #[inline]
+    #[must_use]
     pub fn default_avatar_url(&self) -> String {
         default_avatar_url(self.discriminator)
     }
 
-    /// Sends a message to a user through a direct message channel. This is a
-    /// channel that can only be accessed by you and the recipient.
+    /// Sends a message to a user through a direct message channel. This is a channel that can only
+    /// be accessed by you and the recipient.
     ///
     /// # Examples
     ///
@@ -643,10 +750,11 @@ impl User {
     /// help message, and then react with `'👌'` to verify message sending:
     ///
     /// ```rust,no_run
-    /// # #[cfg(feature="client")] {
+    /// # #[cfg(feature = "client")] {
     /// # use serenity::prelude::*;
     /// # use serenity::model::prelude::*;
     /// #
+    /// use serenity::builder::CreateMessage;
     /// use serenity::model::Permissions;
     ///
     /// struct Handler;
@@ -656,24 +764,19 @@ impl User {
     /// #   #[cfg(feature = "cache")]
     ///     async fn message(&self, ctx: Context, msg: Message) {
     ///         if msg.content == "~help" {
-    ///             let url = match ctx.cache.current_user().await.invite_url(&ctx, Permissions::empty()).await {
+    ///             let current_user = ctx.cache.current_user().clone();
+    ///             let url = match current_user.invite_url(&ctx, Permissions::empty()).await {
     ///                 Ok(v) => v,
     ///                 Err(why) => {
     ///                     println!("Error creating invite url: {:?}", why);
-    ///
     ///                     return;
     ///                 },
     ///             };
     ///
-    ///             let help = format!(
-    ///                 "Helpful info here. Invite me with this link: <{}>",
-    ///                 url,
-    ///             );
+    ///             let help = format!("Helpful info here. Invite me with this link: <{}>", url);
     ///
-    ///             let dm = msg.author.direct_message(&ctx, |m| {
-    ///                 m.content(&help)
-    ///             })
-    ///             .await;
+    ///             let builder = CreateMessage::new().content(help);
+    ///             let dm = msg.author.direct_message(&ctx, builder).await;
     ///
     ///             match dm {
     ///                 Ok(_) => {
@@ -690,7 +793,8 @@ impl User {
     /// }
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut client =Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     /// #     Ok(())
     /// # }
     /// # }
@@ -698,32 +802,24 @@ impl User {
     ///
     /// # Errors
     ///
-    /// Returns a [`ModelError::MessagingBot`] if the user being direct messaged
-    /// is a bot user.
+    /// Returns a [`ModelError::MessagingBot`] if the user being direct messaged is a bot user.
     ///
-    /// May also return an [`Error::Http`] if the message was illformed, or if the
-    /// user cannot be sent a direct message.
+    /// May also return an [`Error::Http`] if the user cannot be sent a direct message.
     ///
-    /// [`Error::Json`] can also be returned if there is an error deserializing
-    /// the API response.
-    ///
-    /// [`Error::Http`]: crate::error::Error::Http
-    /// [`Error::Json`]: crate::error::Error::Json
-    pub async fn direct_message<F>(&self, cache_http: impl CacheHttp, f: F) -> Result<Message>
-    where
-        for<'a, 'b> F: FnOnce(&'b mut CreateMessage<'a>) -> &'b mut CreateMessage<'a>,
-    {
-        self.create_dm_channel(&cache_http).await?.send_message(&cache_http.http(), f).await
+    /// Returns an [`Error::Json`] if there is an error deserializing the API response.
+    pub async fn direct_message(
+        &self,
+        cache_http: impl CacheHttp,
+        builder: CreateMessage,
+    ) -> Result<Message> {
+        self.create_dm_channel(&cache_http).await?.send_message(cache_http, builder).await
     }
 
     /// This is an alias of [`Self::direct_message`].
     #[allow(clippy::missing_errors_doc)]
     #[inline]
-    pub async fn dm<F>(&self, cache_http: impl CacheHttp, f: F) -> Result<Message>
-    where
-        for<'a, 'b> F: FnOnce(&'b mut CreateMessage<'a>) -> &'b mut CreateMessage<'a>,
-    {
-        self.direct_message(cache_http, f).await
+    pub async fn dm(&self, cache_http: impl CacheHttp, builder: CreateMessage) -> Result<Message> {
+        self.direct_message(cache_http, builder).await
     }
 
     /// Retrieves the URL to the user's avatar, falling back to the default
@@ -731,6 +827,7 @@ impl User {
     ///
     /// This will call [`Self::avatar_url`] first, and if that returns [`None`], it
     /// then falls back to [`Self::default_avatar_url`].
+    #[must_use]
     pub fn face(&self) -> String {
         self.avatar_url().unwrap_or_else(|| self.default_avatar_url())
     }
@@ -738,9 +835,6 @@ impl User {
     /// Check if a user has a [`Role`]. This will retrieve the [`Guild`] from
     /// the [`Cache`] if it is available, and then check if that guild has the
     /// given [`Role`].
-    ///
-    /// Three forms of data may be passed in to the guild parameter: either a
-    /// [`PartialGuild`], a [`GuildId`], or a `u64`.
     ///
     /// # Examples
     ///
@@ -761,57 +855,14 @@ impl User {
     ///
     /// May also return an [`Error::Json`] if there is an error in
     /// deserializing the API response.
-    ///
-    /// [`Error::Http`]: crate::error::Error::Http
-    /// [`Error::Json`]: crate::error::Error::Json
     #[inline]
     pub async fn has_role(
         &self,
         cache_http: impl CacheHttp,
-        guild: impl Into<GuildContainer>,
+        guild_id: impl Into<GuildId>,
         role: impl Into<RoleId>,
     ) -> Result<bool> {
-        self._has_role(&cache_http, guild.into(), role.into()).await
-    }
-
-    fn _has_role<'a>(
-        &'a self,
-        cache_http: &'a impl CacheHttp,
-        guild: GuildContainer,
-        role: RoleId,
-    ) -> BoxFuture<'a, Result<bool>> {
-        async move {
-            match guild {
-                GuildContainer::Guild(partial_guild) => {
-                    self._has_role(cache_http, GuildContainer::Id(partial_guild.id), role).await
-                },
-                GuildContainer::Id(guild_id) => {
-                    // Silences a warning when compiling without the `cache` feature.
-                    #[allow(unused_mut)]
-                    let mut has_role = None;
-
-                    #[cfg(feature = "cache")]
-                    {
-                        if let Some(cache) = cache_http.cache() {
-                            if let Some(member) = cache.member(guild_id, self.id).await {
-                                has_role = Some(member.roles.contains(&role));
-                            }
-                        }
-                    }
-
-                    if let Some(has_role) = has_role {
-                        Ok(has_role)
-                    } else {
-                        cache_http
-                            .http()
-                            .get_member(guild_id.0, self.id.0)
-                            .await
-                            .map(|m| m.roles.contains(&role))
-                    }
-                },
-            }
-        }
-        .boxed()
+        guild_id.into().member(cache_http, self).await.map(|m| m.roles.contains(&role.into()))
     }
 
     /// Refreshes the information about the user.
@@ -821,8 +872,6 @@ impl User {
     /// # Errors
     ///
     /// See [`UserId::to_user`] for what errors may be returned.
-    ///
-    /// [`UserId::to_user`]: crate::model::id::UserId::to_user
     #[inline]
     pub async fn refresh(&mut self, cache_http: impl CacheHttp) -> Result<()> {
         *self = self.id.to_user(cache_http).await?;
@@ -834,6 +883,7 @@ impl User {
     ///
     /// This will always produce a WEBP image URL.
     #[inline]
+    #[must_use]
     pub fn static_avatar_url(&self) -> Option<String> {
         static_avatar_url(self.id, self.avatar.as_ref())
     }
@@ -852,8 +902,8 @@ impl User {
     /// # use serenity::prelude::*;
     /// # use serenity::model::prelude::*;
     /// #
-    /// use serenity::utils::MessageBuilder;
     /// use serenity::utils::ContentModifier::Bold;
+    /// use serenity::utils::MessageBuilder;
     ///
     /// struct Handler;
     ///
@@ -870,13 +920,15 @@ impl User {
     ///         }
     ///     }
     /// }
-    /// let mut client =Client::builder("token").event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder("token", GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// client.start().await?;
     /// #     Ok(())
     /// # }
     /// ```
     #[inline]
+    #[must_use]
     pub fn tag(&self) -> String {
         tag(&self.name, self.discriminator)
     }
@@ -892,10 +944,12 @@ impl User {
     ) -> Option<String> {
         let guild_id = guild_id.into();
 
+        // This can't be removed because `GuildId::member` clones the entire `Member` struct if
+        // it's present in the cache, which is expensive.
         #[cfg(feature = "cache")]
         {
             if let Some(cache) = cache_http.cache() {
-                if let Some(guild) = guild_id.to_guild_cached(cache).await {
+                if let Some(guild) = guild_id.to_guild_cached(cache) {
                     if let Some(member) = guild.members.get(&self.id) {
                         return member.nick.clone();
                     }
@@ -903,47 +957,35 @@ impl User {
             }
         }
 
+        // At this point we're guaranteed to do an API call.
         guild_id.member(cache_http, &self.id).await.ok().and_then(|member| member.nick)
     }
 
-    /// Returns a future that will await one message by this user.
+    /// Returns a builder which can be awaited to obtain a message or stream of messages sent by this user.
     #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub fn await_reply<'a>(
-        &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> CollectReply<'a> {
-        CollectReply::new(shard_messenger).author_id(self.id.0)
+    pub fn await_reply(&self, shard_messenger: impl AsRef<ShardMessenger>) -> MessageCollector {
+        MessageCollector::new(shard_messenger).author_id(self.id)
     }
 
-    /// Returns a stream builder which can be awaited to obtain a stream of messages sent by this user.
+    /// Same as [`Self::await_reply`].
     #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub fn await_replies<'a>(
-        &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> MessageCollectorBuilder<'a> {
-        MessageCollectorBuilder::new(shard_messenger).author_id(self.id.0)
+    pub fn await_replies(&self, shard_messenger: impl AsRef<ShardMessenger>) -> MessageCollector {
+        self.await_reply(shard_messenger)
     }
 
-    /// Await a single reaction by this user.
+    /// Returns a builder which can be awaited to obtain a reaction or stream of reactions sent by this user.
     #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub fn await_reaction<'a>(
-        &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> CollectReaction<'a> {
-        CollectReaction::new(shard_messenger).author_id(self.id.0)
+    pub fn await_reaction(&self, shard_messenger: impl AsRef<ShardMessenger>) -> ReactionCollector {
+        ReactionCollector::new(shard_messenger).author_id(self.id)
     }
 
-    /// Returns a stream builder which can be awaited to obtain a stream of reactions sent by this user.
+    /// Same as [`Self::await_reaction`].
     #[cfg(feature = "collector")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "collector")))]
-    pub fn await_reactions<'a>(
+    pub fn await_reactions(
         &self,
-        shard_messenger: &'a impl AsRef<ShardMessenger>,
-    ) -> ReactionCollectorBuilder<'a> {
-        ReactionCollectorBuilder::new(shard_messenger).author_id(self.id.0)
+        shard_messenger: impl AsRef<ShardMessenger>,
+    ) -> ReactionCollector {
+        self.await_reaction(shard_messenger)
     }
 }
 
@@ -969,14 +1011,13 @@ impl UserId {
     ///
     /// May also return an [`Error::Json`] if there is an error in deserializing
     /// the channel data returned by the Discord API.
-    ///
-    /// [`Error::Http`]: crate::error::Error::Http
-    /// [`Error::Json`]: crate::error::Error::Json
     pub async fn create_dm_channel(self, cache_http: impl CacheHttp) -> Result<PrivateChannel> {
         #[cfg(feature = "cache")]
         {
             if let Some(cache) = cache_http.cache() {
-                for channel in cache.private_channels().await.values() {
+                for channel_entry in cache.private_channels().iter() {
+                    let channel = channel_entry.value();
+
                     if channel.recipient.id == self {
                         return Ok(channel.clone());
                     }
@@ -994,15 +1035,17 @@ impl UserId {
     /// Attempts to find a [`User`] by its Id in the cache.
     #[cfg(feature = "cache")]
     #[inline]
-    pub async fn to_user_cached(self, cache: impl AsRef<Cache>) -> Option<User> {
-        cache.as_ref().user(self).await
+    pub fn to_user_cached(self, cache: &impl AsRef<Cache>) -> Option<UserRef<'_>> {
+        cache.as_ref().user(self)
     }
 
     /// First attempts to find a [`User`] by its Id in the cache,
     /// upon failure requests it via the REST API.
     ///
-    /// **Note**: If the cache is not enabled,
-    /// REST API will be used only.
+    /// **Note**: If the cache is not enabled, REST API will be used only.
+    ///
+    /// **Note**: If the cache is enabled, you might want to enable the `temp_cache` feature to
+    /// cache user data retrieved by this function for a short duration.
     ///
     /// # Errors
     ///
@@ -1011,21 +1054,27 @@ impl UserId {
     ///
     /// May also return an [`Error::Json`] if there is an error in
     /// deserializing the user.
-    ///
-    /// [`Error::Http`]: crate::error::Error::Http
-    /// [`Error::Json`]: crate::error::Error::Json
     #[inline]
     pub async fn to_user(self, cache_http: impl CacheHttp) -> Result<User> {
         #[cfg(feature = "cache")]
         {
             if let Some(cache) = cache_http.cache() {
-                if let Some(user) = cache.user(self).await {
-                    return Ok(user);
+                if let Some(user) = cache.user(self) {
+                    return Ok(user.clone());
                 }
             }
         }
 
-        cache_http.http().get_user(self.0).await
+        let user = cache_http.http().get_user(self).await?;
+
+        #[cfg(all(feature = "cache", feature = "temp_cache"))]
+        {
+            if let Some(cache) = cache_http.cache() {
+                cache.temp_users.insert(user.id, Arc::new(user.clone()));
+            }
+        }
+
+        Ok(user)
     }
 }
 
@@ -1038,6 +1087,9 @@ impl From<CurrentUser> for User {
             id: user.id,
             name: user.name,
             public_flags: user.public_flags,
+            banner: user.banner,
+            accent_colour: user.accent_colour,
+            member: None,
         }
     }
 }
@@ -1051,6 +1103,9 @@ impl<'a> From<&'a CurrentUser> for User {
             id: user.id,
             name: user.name.clone(),
             public_flags: user.public_flags,
+            banner: user.banner.clone(),
+            accent_colour: user.accent_colour,
+            member: None,
         }
     }
 }
@@ -1117,6 +1172,15 @@ fn static_avatar_url(user_id: UserId, hash: Option<&String>) -> Option<String> {
 }
 
 #[cfg(feature = "model")]
+fn banner_url(user_id: UserId, hash: Option<&String>) -> Option<String> {
+    hash.map(|hash| {
+        let ext = if hash.starts_with("a_") { "gif" } else { "webp" };
+
+        cdn!("/banners/{}/{}.{}?size=1024", user_id.0, hash, ext)
+    })
+}
+
+#[cfg(feature = "model")]
 fn tag(name: &str, discriminator: u16) -> String {
     // 32: max length of username
     // 1: `#`
@@ -1124,23 +1188,65 @@ fn tag(name: &str, discriminator: u16) -> String {
     let mut tag = String::with_capacity(37);
     tag.push_str(name);
     tag.push('#');
-
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = write!(tag, "{:04}", discriminator);
+    write!(tag, "{discriminator:04}").unwrap();
 
     tag
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod test {
+    #[test]
+    fn test_discriminator_serde() {
+        use serde::{Deserialize, Serialize};
+
+        use super::discriminator;
+        use crate::json::{assert_json, json};
+
+        #[derive(Debug, PartialEq, Deserialize, Serialize)]
+        struct User {
+            #[serde(with = "discriminator")]
+            discriminator: u16,
+        }
+        #[derive(Debug, PartialEq, Deserialize, Serialize)]
+        struct UserOpt {
+            #[serde(
+                default,
+                skip_serializing_if = "Option::is_none",
+                with = "discriminator::option"
+            )]
+            discriminator: Option<u16>,
+        }
+
+        let user = User {
+            discriminator: 123,
+        };
+        assert_json(&user, json!({"discriminator": "0123"}));
+
+        let user = UserOpt {
+            discriminator: Some(123),
+        };
+        assert_json(&user, json!({"discriminator": "0123"}));
+
+        let user_no_discriminator = UserOpt {
+            discriminator: None,
+        };
+        assert_json(&user_no_discriminator, json!({}));
+    }
+
     #[cfg(feature = "model")]
     mod model {
+        use crate::model::id::UserId;
         use crate::model::user::User;
 
         #[test]
         fn test_core() {
-            let mut user = User::default();
+            let mut user = User {
+                id: UserId::new(210),
+                avatar: Some("abc".to_string()),
+                discriminator: 1432,
+                name: "test".to_string(),
+                ..Default::default()
+            };
 
             assert!(user.avatar_url().unwrap().ends_with("/avatars/210/abc.webp?size=1024"));
             assert!(user.static_avatar_url().unwrap().ends_with("/avatars/210/abc.webp?size=1024"));

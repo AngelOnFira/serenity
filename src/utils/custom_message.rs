@@ -1,14 +1,12 @@
-use chrono::{DateTime, Utc};
-use serde_json::Value;
-
 use crate::model::prelude::*;
+use crate::model::Timestamp;
 
 /// A builder for constructing a personal [`Message`] instance.
 /// This can be useful for emitting a manual [`dispatch`] to the framework,
 /// but you don't have a message in hand, or just have a fragment of its data.
 ///
 /// [`dispatch`]: crate::framework::Framework::dispatch
-#[derive(Debug, Clone)]
+#[derive(Clone, Default, Debug)]
 pub struct CustomMessage {
     msg: Message,
 }
@@ -18,14 +16,16 @@ impl CustomMessage {
     /// with dummy data. Use the methods to replace the individual bits
     /// of this message with valid data.
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Assign the dummy message a proper ID for identification.
     ///
-    /// If not used, the default value is `MessageId(0)`.
+    /// If not used, the default value is `MessageId::new(1)`.
     #[inline]
+    #[must_use]
     pub fn id(&mut self, id: MessageId) -> &mut Self {
         self.msg.id = id;
 
@@ -57,7 +57,7 @@ impl CustomMessage {
 
     /// Assign the dummy message its origin channel's ID.
     ///
-    /// If not used, the default value is `ChannelId(0)`.
+    /// If not used, the default value is `ChannelId::new(1)`.
     #[inline]
     pub fn channel_id(&mut self, channel_id: ChannelId) -> &mut Self {
         self.msg.channel_id = channel_id;
@@ -69,8 +69,8 @@ impl CustomMessage {
     ///
     /// If not used, the default value is an empty string (`String::default()`).
     #[inline]
-    pub fn content<T: ToString>(&mut self, s: T) -> &mut Self {
-        self.msg.content = s.to_string();
+    pub fn content(&mut self, s: impl Into<String>) -> &mut Self {
+        self.msg.content = s.into();
 
         self
     }
@@ -79,8 +79,8 @@ impl CustomMessage {
     ///
     /// If not used, the default value is [`None`] (not all messages are edited).
     #[inline]
-    pub fn edited_timestamp(&mut self, timestamp: DateTime<Utc>) -> &mut Self {
-        self.msg.edited_timestamp = Some(timestamp);
+    pub fn edited_timestamp<T: Into<Timestamp>>(&mut self, timestamp: T) -> &mut Self {
+        self.msg.edited_timestamp = Some(timestamp.into());
 
         self
     }
@@ -125,7 +125,7 @@ impl CustomMessage {
     /// [author]: Self::author
     #[inline]
     pub fn member(&mut self, member: PartialMember) -> &mut Self {
-        self.msg.member = Some(member);
+        self.msg.member = Some(Box::new(member));
 
         self
     }
@@ -193,8 +193,8 @@ impl CustomMessage {
     ///
     /// If not used, the default value is the current local time.
     #[inline]
-    pub fn timestamp(&mut self, timestamp: DateTime<Utc>) -> &mut Self {
-        self.msg.timestamp = timestamp;
+    pub fn timestamp<T: Into<Timestamp>>(&mut self, timestamp: T) -> &mut Self {
+        self.msg.timestamp = timestamp.into();
 
         self
     }
@@ -221,59 +221,8 @@ impl CustomMessage {
 
     /// Consume this builder and return the constructed message.
     #[inline]
+    #[must_use]
     pub fn build(self) -> Message {
         self.msg
-    }
-}
-
-impl Default for CustomMessage {
-    #[inline]
-    fn default() -> Self {
-        CustomMessage {
-            msg: dummy_message(),
-        }
-    }
-}
-
-#[inline]
-fn dummy_message() -> Message {
-    Message {
-        id: MessageId::default(),
-        attachments: Vec::new(),
-        author: User {
-            id: UserId::default(),
-            avatar: None,
-            bot: false,
-            discriminator: 0x0000,
-            name: String::new(),
-            public_flags: None,
-        },
-        channel_id: ChannelId::default(),
-        content: String::new(),
-        edited_timestamp: None,
-        embeds: Vec::new(),
-        guild_id: None,
-        kind: MessageType::Regular,
-        member: None,
-        mention_everyone: false,
-        mention_roles: Vec::new(),
-        mention_channels: Vec::new(),
-        mentions: Vec::new(),
-        nonce: Value::Null,
-        pinned: false,
-        reactions: Vec::new(),
-        tts: false,
-        webhook_id: None,
-        timestamp: Utc::now(),
-        activity: None,
-        application: None,
-        message_reference: None,
-        flags: None,
-        stickers: Vec::new(),
-        referenced_message: None,
-        #[cfg(feature = "unstable_discord_api")]
-        interaction: None,
-        #[cfg(feature = "unstable_discord_api")]
-        components: vec![],
     }
 }

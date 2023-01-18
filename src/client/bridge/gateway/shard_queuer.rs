@@ -1,23 +1,16 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-};
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
-use futures::{
-    channel::mpsc::{UnboundedReceiver as Receiver, UnboundedSender as Sender},
-    StreamExt,
-};
+use futures::channel::mpsc::{UnboundedReceiver as Receiver, UnboundedSender as Sender};
+use futures::StreamExt;
+#[cfg(feature = "framework")]
+use once_cell::sync::OnceCell;
 use tokio::sync::{Mutex, RwLock};
-#[cfg(all(feature = "tokio_compat", not(feature = "tokio")))]
-use tokio::time::delay_for as sleep;
-#[cfg(feature = "tokio")]
-use tokio::time::sleep;
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{sleep, timeout, Duration, Instant};
 use tracing::{debug, info, instrument, warn};
 use typemap_rev::TypeMap;
 
 use super::{
-    GatewayIntents,
     ShardClientMessage,
     ShardId,
     ShardManagerMessage,
@@ -27,15 +20,18 @@ use super::{
     ShardRunnerInfo,
     ShardRunnerOptions,
 };
+#[cfg(feature = "cache")]
+use crate::cache::Cache;
 #[cfg(feature = "voice")]
 use crate::client::bridge::voice::VoiceGatewayManager;
 use crate::client::{EventHandler, RawEventHandler};
 #[cfg(feature = "framework")]
 use crate::framework::Framework;
-use crate::gateway::ConnectionStage;
-use crate::gateway::{InterMessage, Shard};
+use crate::gateway::{ConnectionStage, InterMessage, PresenceData, Shard};
+use crate::http::Http;
 use crate::internal::prelude::*;
-use crate::CacheAndHttp;
+use crate::internal::tokio::spawn_named;
+use crate::model::gateway::{GatewayIntents, ShardInfo};
 
 const WAIT_BETWEEN_BOOTS_IN_SECONDS: u64 = 5;
 
@@ -55,15 +51,15 @@ pub struct ShardQueuer {
     /// [`Client`].
     ///
     /// [`Client`]: crate::Client
-    pub event_handler: Option<Arc<dyn EventHandler>>,
+    pub event_handlers: Vec<Arc<dyn EventHandler>>,
     /// A reference to an [`RawEventHandler`], such as the one given to the
     /// [`Client`].
     ///
     /// [`Client`]: crate::Client
-    pub raw_event_handler: Option<Arc<dyn RawEventHandler>>,
+    pub raw_event_handlers: Vec<Arc<dyn RawEventHandler>>,
     /// A copy of the framework
     #[cfg(feature = "framework")]
-    pub framework: Arc<Box<dyn Framework + Send + Sync>>,
+    pub framework: Arc<OnceCell<Arc<dyn Framework>>>,
     /// The instant that a shard was last started.
     ///
     /// This is used to determine how long to wait between shard IDENTIFYs.
@@ -76,18 +72,21 @@ pub struct ShardQueuer {
     /// The shards that are queued for booting.
     ///
     /// This will typically be filled with previously failed boots.
-    pub queue: VecDeque<(u64, u64)>,
+    pub queue: VecDeque<ShardInfo>,
     /// A copy of the map of shard runners.
     pub runners: Arc<Mutex<HashMap<ShardId, ShardRunnerInfo>>>,
     /// A receiver channel for the shard queuer to be told to start shards.
     pub rx: Receiver<ShardQueuerMessage>,
     /// A copy of the client's voice manager.
     #[cfg(feature = "voice")]
-    pub voice_manager: Option<Arc<dyn VoiceGatewayManager + Send + Sync + 'static>>,
-    /// A copy of the URI to use to connect to the gateway.
+    pub voice_manager: Option<Arc<dyn VoiceGatewayManager + 'static>>,
+    /// A copy of the URL to use to connect to the gateway.
     pub ws_url: Arc<Mutex<String>>,
-    pub cache_and_http: Arc<CacheAndHttp>,
+    #[cfg(feature = "cache")]
+    pub cache: Arc<Cache>,
+    pub http: Arc<Http>,
     pub intents: GatewayIntents,
+    pub presence: Option<PresenceData>,
 }
 
 impl ShardQueuer {
@@ -133,8 +132,8 @@ impl ShardQueuer {
                 },
                 Ok(None) => break,
                 Err(_) => {
-                    if let Some((id, total)) = self.queue.pop_front() {
-                        self.checked_start(id, total).await;
+                    if let Some(shard) = self.queue.pop_front() {
+                        self.checked_start(shard.id, shard.total).await;
                     }
                 },
             }
@@ -143,10 +142,7 @@ impl ShardQueuer {
 
     #[instrument(skip(self))]
     async fn check_last_start(&mut self) {
-        let instant = match self.last_start {
-            Some(instant) => instant,
-            None => return,
-        };
+        let Some(instant) = self.last_start else {return};
 
         // We must wait 5 seconds between IDENTIFYs to avoid session
         // invalidations.
@@ -163,7 +159,7 @@ impl ShardQueuer {
     }
 
     #[instrument(skip(self))]
-    async fn checked_start(&mut self, id: u64, total: u64) {
+    async fn checked_start(&mut self, id: u32, total: u32) {
         debug!("[Shard Queuer] Checked start for shard {} out of {}", id, total);
         self.check_last_start().await;
 
@@ -171,35 +167,41 @@ impl ShardQueuer {
             warn!("[Shard Queuer] Err starting shard {}: {:?}", id, why);
             info!("[Shard Queuer] Re-queueing start of shard {}", id);
 
-            self.queue.push_back((id, total));
+            self.queue.push_back(ShardInfo::new(id, total));
         }
 
         self.last_start = Some(Instant::now());
     }
 
     #[instrument(skip(self))]
-    async fn start(&mut self, shard_id: u64, shard_total: u64) -> Result<()> {
-        let shard_info = [shard_id, shard_total];
+    async fn start(&mut self, id: u32, total: u32) -> Result<()> {
+        let shard_info = ShardInfo::new(id, total);
 
-        let shard = Shard::new(
+        let mut shard = Shard::new(
             Arc::clone(&self.ws_url),
-            &self.cache_and_http.http.token,
+            self.http.token(),
             shard_info,
             self.intents,
+            self.presence.clone(),
         )
         .await?;
 
+        let cloned_http = Arc::clone(&self.http);
+        shard.set_application_id_callback(move |id| cloned_http.set_application_id(id));
+
         let mut runner = ShardRunner::new(ShardRunnerOptions {
             data: Arc::clone(&self.data),
-            event_handler: self.event_handler.as_ref().map(|eh| Arc::clone(eh)),
-            raw_event_handler: self.raw_event_handler.as_ref().map(|rh| Arc::clone(rh)),
+            event_handlers: self.event_handlers.clone(),
+            raw_event_handlers: self.raw_event_handlers.clone(),
             #[cfg(feature = "framework")]
-            framework: Arc::clone(&self.framework),
+            framework: self.framework.get().map(Arc::clone),
             manager_tx: self.manager_tx.clone(),
             #[cfg(feature = "voice")]
             voice_manager: self.voice_manager.clone(),
             shard,
-            cache_and_http: Arc::clone(&self.cache_and_http),
+            #[cfg(feature = "cache")]
+            cache: Arc::clone(&self.cache),
+            http: Arc::clone(&self.http),
         });
 
         let runner_info = ShardRunnerInfo {
@@ -208,13 +210,12 @@ impl ShardQueuer {
             stage: ConnectionStage::Disconnected,
         };
 
-        tokio::spawn(async move {
-            #[allow(clippy::let_underscore_must_use)]
-            let _ = runner.run().await;
+        spawn_named("shard_queuer::stop", async move {
+            drop(runner.run().await);
             debug!("[ShardRunner {:?}] Stopping", runner.shard.shard_info());
         });
 
-        self.runners.lock().await.insert(ShardId(shard_id), runner_info);
+        self.runners.lock().await.insert(ShardId(id), runner_info);
 
         Ok(())
     }
@@ -228,7 +229,7 @@ impl ShardQueuer {
                 return;
             }
 
-            runners.keys().cloned().collect::<Vec<_>>()
+            runners.keys().copied().collect::<Vec<_>>()
         };
 
         info!("Shutting down all shards");
@@ -251,7 +252,7 @@ impl ShardQueuer {
         if let Some(runner) = self.runners.lock().await.get(&shard_id) {
             let shutdown = ShardManagerMessage::Shutdown(shard_id, code);
             let client_msg = ShardClientMessage::Manager(shutdown);
-            let msg = InterMessage::Client(Box::new(client_msg));
+            let msg = InterMessage::Client(client_msg);
 
             if let Err(why) = runner.runner_tx.tx.unbounded_send(msg) {
                 warn!(

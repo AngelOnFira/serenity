@@ -24,27 +24,20 @@ mod dispatch;
 mod error;
 #[cfg(feature = "gateway")]
 mod event_handler;
-#[cfg(feature = "gateway")]
-mod extras;
 
-#[cfg(all(feature = "cache", feature = "gateway"))]
-use std::time::Duration;
-use std::{
-    boxed::Box,
-    future::Future,
-    pin::Pin,
-    sync::Arc,
-    task::{Context as FutContext, Poll},
-};
+use std::future::IntoFuture;
+use std::ops::Range;
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
+#[cfg(feature = "framework")]
+use once_cell::sync::OnceCell;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, instrument};
 use typemap_rev::{TypeMap, TypeMapKey};
 
 #[cfg(feature = "gateway")]
 use self::bridge::gateway::{
-    GatewayIntents,
     ShardManager,
     ShardManagerError,
     ShardManagerMonitor,
@@ -52,12 +45,10 @@ use self::bridge::gateway::{
 };
 #[cfg(feature = "voice")]
 use self::bridge::voice::VoiceGatewayManager;
-pub use self::{context::Context, error::Error as ClientError};
+pub use self::context::Context;
+pub use self::error::Error as ClientError;
 #[cfg(feature = "gateway")]
-pub use self::{
-    event_handler::{EventHandler, RawEventHandler},
-    extras::Extras,
-};
+pub use self::event_handler::{EventHandler, FullEvent, RawEventHandler};
 #[cfg(feature = "gateway")]
 use super::gateway::GatewayError;
 #[cfg(feature = "cache")]
@@ -66,59 +57,48 @@ pub use crate::cache::Cache;
 use crate::cache::Settings as CacheSettings;
 #[cfg(feature = "framework")]
 use crate::framework::Framework;
+use crate::gateway::{ActivityData, PresenceData};
 use crate::http::Http;
 use crate::internal::prelude::*;
-#[cfg(feature = "unstable_discord_api")]
-use crate::model::id::ApplicationId;
-use crate::model::id::UserId;
-pub use crate::CacheAndHttp;
-
-/// A builder implementing [`Future`] building a [`Client`] to interact with Discord.
 #[cfg(feature = "gateway")]
-pub struct ClientBuilder<'a> {
-    // FIXME: Remove this allow attribute once `application_id` is no longer feature-gated
-    // under `unstable_discord_api`.
-    #[allow(dead_code)]
-    token: Option<String>,
-    data: Option<TypeMap>,
-    http: Option<Http>,
-    fut: Option<BoxFuture<'a, Result<Client>>>,
+use crate::model::gateway::GatewayIntents;
+use crate::model::id::ApplicationId;
+use crate::model::user::OnlineStatus;
+
+/// A builder implementing [`IntoFuture`] building a [`Client`] to interact with Discord.
+#[cfg(feature = "gateway")]
+#[must_use = "Builders do nothing unless they are awaited"]
+pub struct ClientBuilder {
+    data: TypeMap,
+    http: Http,
     intents: GatewayIntents,
-    #[cfg(feature = "unstable_discord_api")]
-    application_id: Option<ApplicationId>,
     #[cfg(feature = "cache")]
-    timeout: Option<Duration>,
-    #[cfg(feature = "cache")]
-    cache_settings: Option<CacheSettings>,
+    cache_settings: CacheSettings,
     #[cfg(feature = "framework")]
-    framework: Option<Arc<Box<dyn Framework + Send + Sync + 'static>>>,
+    framework: Option<Box<dyn Framework>>,
     #[cfg(feature = "voice")]
-    voice_manager: Option<Arc<dyn VoiceGatewayManager + Send + Sync + 'static>>,
-    event_handler: Option<Arc<dyn EventHandler>>,
-    raw_event_handler: Option<Arc<dyn RawEventHandler>>,
+    voice_manager: Option<Arc<dyn VoiceGatewayManager>>,
+    event_handlers: Vec<Arc<dyn EventHandler>>,
+    raw_event_handlers: Vec<Arc<dyn RawEventHandler>>,
+    presence: PresenceData,
 }
 
 #[cfg(feature = "gateway")]
-impl<'a> ClientBuilder<'a> {
-    fn _new() -> Self {
+impl ClientBuilder {
+    fn _new(http: Http, intents: GatewayIntents) -> Self {
         Self {
-            token: None,
-            data: Some(TypeMap::new()),
-            http: None,
-            fut: None,
-            intents: GatewayIntents::non_privileged(),
-            #[cfg(feature = "unstable_discord_api")]
-            application_id: None,
+            data: TypeMap::new(),
+            http,
+            intents,
             #[cfg(feature = "cache")]
-            timeout: None,
-            #[cfg(feature = "cache")]
-            cache_settings: Some(CacheSettings::new()),
+            cache_settings: CacheSettings::default(),
             #[cfg(feature = "framework")]
             framework: None,
             #[cfg(feature = "voice")]
             voice_manager: None,
-            event_handler: None,
-            raw_event_handler: None,
+            event_handlers: vec![],
+            raw_event_handlers: vec![],
+            presence: PresenceData::default(),
         }
     }
 
@@ -127,10 +107,10 @@ impl<'a> ClientBuilder<'a> {
     ///
     /// **Panic**:
     /// If you have enabled the `framework`-feature (on by default), you must specify
-    /// a framework via the [`Self::framework`] or [`Self::framework_arc`] method,
+    /// a framework via the [`Self::framework`] method,
     /// otherwise awaiting the builder will cause a panic.
-    pub fn new(token: impl AsRef<str>) -> Self {
-        Self::_new().token(token)
+    pub fn new(token: impl AsRef<str>, intents: GatewayIntents) -> Self {
+        Self::_new(Http::new(token.as_ref()), intents)
     }
 
     /// Construct a new builder with a [`Http`] instance to calls methods on
@@ -138,49 +118,49 @@ impl<'a> ClientBuilder<'a> {
     ///
     /// **Panic**:
     /// If you have enabled the `framework`-feature (on by default), you must specify
-    /// a framework via the [`Self::framework`] or [`Self::framework_arc`] method,
+    /// a framework via the [`Self::framework`] method,
     /// otherwise awaiting the builder will cause a panic.
-    ///
-    /// [`Http`]: crate::http::Http
-    pub fn new_with_http(http: Http) -> Self {
-        let mut c = Self::_new();
-        c.http = Some(http);
-        c
+    pub fn new_with_http(http: Http, intents: GatewayIntents) -> Self {
+        Self::_new(http, intents)
     }
 
     /// Sets a token for the bot. If the token is not prefixed "Bot ",
     /// this method will automatically do so.
     pub fn token(mut self, token: impl AsRef<str>) -> Self {
-        let token = token.as_ref().trim();
-
-        let token =
-            if token.starts_with("Bot ") { token.to_string() } else { format!("Bot {}", token) };
-
-        self.token = Some(token.clone());
-
-        self.http = Some(Http::new_with_token(&token));
+        self.http = Http::new(token.as_ref());
 
         self
     }
 
-    /// Sets the application id.
-    #[cfg(feature = "unstable_discord_api")]
-    pub fn application_id(mut self, application_id: u64) -> Self {
-        self.application_id = Some(ApplicationId(application_id));
+    /// Gets the current token used for the [`Http`] client.
+    pub fn get_token(&self) -> &str {
+        self.http.token()
+    }
 
-        self.http =
-            Some(Http::new_with_token_application_id(&self.token.clone().unwrap(), application_id));
+    /// Sets the application id.
+    pub fn application_id(self, application_id: ApplicationId) -> Self {
+        self.http.set_application_id(application_id);
 
         self
+    }
+
+    /// Gets the application ID, if already initialized. See [`Self::application_id`] for more info.
+    pub fn get_application_id(&self) -> Option<ApplicationId> {
+        self.http.application_id()
     }
 
     /// Sets the entire [`TypeMap`] that will be available in [`Context`]s.
     /// A [`TypeMap`] must not be constructed manually: [`Self::type_map_insert`]
     /// can be used to insert one type at a time.
     pub fn type_map(mut self, type_map: TypeMap) -> Self {
-        self.data = Some(type_map);
+        self.data = type_map;
 
         self
+    }
+
+    /// Gets the type map. See [`Self::type_map`] for more info.
+    pub fn get_type_map(&self) -> &TypeMap {
+        &self.data
     }
 
     /// Insert a single `value` into the internal [`TypeMap`] that will
@@ -188,28 +168,7 @@ impl<'a> ClientBuilder<'a> {
     /// This method can be called multiple times in order to populate the
     /// [`TypeMap`] with `value`s.
     pub fn type_map_insert<T: TypeMapKey>(mut self, value: T::Value) -> Self {
-        if let Some(ref mut data) = self.data {
-            data.insert::<T>(value);
-        } else {
-            let mut type_map = TypeMap::new();
-            type_map.insert::<T>(value);
-
-            self.data = Some(type_map);
-        }
-
-        self
-    }
-
-    /// Sets how long - if wanted to begin with - a cache update shall
-    /// be attempted for. After the `timeout` ran out, the update will be
-    /// skipped.
-    ///
-    /// By default, a cache update will never timeout and potentially
-    /// cause a deadlock.
-    /// A timeout however, will invalidate the cache.
-    #[cfg(feature = "cache")]
-    pub fn cache_update_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
+        self.data.insert::<T>(value);
 
         self
     }
@@ -217,17 +176,21 @@ impl<'a> ClientBuilder<'a> {
     /// Sets the settings of the cache.
     /// Refer to [`Settings`] for more information.
     ///
-    /// [`Settings`]: self::CacheSettings
+    /// [`Settings`]: CacheSettings
     #[cfg(feature = "cache")]
     pub fn cache_settings<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut CacheSettings) -> &mut CacheSettings,
     {
-        if let Some(ref mut settings) = self.cache_settings {
-            f(settings);
-        }
+        f(&mut self.cache_settings);
 
         self
+    }
+
+    /// Gets the cache settings. See [`Self::cache_settings`] for more info.
+    #[cfg(feature = "cache")]
+    pub fn get_cache_settings(&self) -> &CacheSettings {
+        &self.cache_settings
     }
 
     /// Sets the command framework to be used. It will receive messages sent
@@ -235,30 +198,22 @@ impl<'a> ClientBuilder<'a> {
     /// dispatch a command.
     ///
     /// *Info*:
-    /// If a reference to the framework is required for manual dispatch,
-    /// use the [`Self::framework_arc`]-method instead.
+    /// If a reference to the framework is required for manual dispatch, you can implement
+    /// [`Framework`] on [`Arc<YourFrameworkType>`] instead of `YourFrameworkType`.
     #[cfg(feature = "framework")]
     pub fn framework<F>(mut self, framework: F) -> Self
     where
-        F: Framework + Send + Sync + 'static,
+        F: Framework + 'static,
     {
-        self.framework = Some(Arc::new(Box::new(framework)));
+        self.framework = Some(Box::new(framework));
 
         self
     }
 
-    /// This method allows to pass an [`Arc`]'ed `framework` - this step is
-    /// done for you in the [`Self::framework`]-method, if you don't need the
-    /// extra control.
-    /// You can provide a clone and keep the original to manually dispatch.
+    /// Gets the framework, if already initialized. See [`Self::framework`] for more info.
     #[cfg(feature = "framework")]
-    pub fn framework_arc(
-        mut self,
-        framework: Arc<Box<dyn Framework + Send + Sync + 'static>>,
-    ) -> Self {
-        self.framework = Some(framework);
-
-        self
+    pub fn get_framework(&self) -> Option<&dyn Framework> {
+        self.framework.as_deref()
     }
 
     /// Sets the voice gateway handler to be used. It will receive voice events sent
@@ -271,7 +226,7 @@ impl<'a> ClientBuilder<'a> {
     #[cfg(feature = "voice")]
     pub fn voice_manager<V>(mut self, voice_manager: V) -> Self
     where
-        V: VoiceGatewayManager + Send + Sync + 'static,
+        V: VoiceGatewayManager + 'static,
     {
         self.voice_manager = Some(Arc::new(voice_manager));
 
@@ -283,15 +238,21 @@ impl<'a> ClientBuilder<'a> {
     /// extra control.
     /// You can provide a clone and keep the original to manually dispatch.
     ///
-    /// [`voice_manager`]: #method.voice_manager
+    /// [`voice_manager`]: Self::voice_manager
     #[cfg(feature = "voice")]
     pub fn voice_manager_arc(
         mut self,
-        voice_manager: Arc<dyn VoiceGatewayManager + Send + Sync + 'static>,
+        voice_manager: Arc<dyn VoiceGatewayManager + 'static>,
     ) -> Self {
         self.voice_manager = Some(voice_manager);
 
         self
+    }
+
+    /// Gets the voice manager, if already initialized. See [`Self::voice_manager`] for more info.
+    #[cfg(feature = "voice")]
+    pub fn get_voice_manager(&self) -> Option<Arc<dyn VoiceGatewayManager>> {
+        self.voice_manager.clone()
     }
 
     /// Sets all intents directly, replacing already set intents.
@@ -308,8 +269,8 @@ impl<'a> ClientBuilder<'a> {
     ///
     /// # Privileged Intents
     ///
-    /// The intents [`GatewayIntents::GUILD_PRESENCES`] and [`GatewayIntents::GUILD_MEMBERS`]
-    /// are *privileged*.
+    /// The intents [`GatewayIntents::GUILD_PRESENCES`], [`GatewayIntents::GUILD_MEMBERS`]
+    /// and [`GatewayIntents::MESSAGE_CONTENT`] are *privileged*.
     /// [Privileged intents] need to be enabled in the *developer portal*.
     /// Once the bot is in 100 guilds or more, [the bot must be verified] in
     /// order to use privileged intents.
@@ -317,99 +278,160 @@ impl<'a> ClientBuilder<'a> {
     /// [gateway intent]: https://discord.com/developers/docs/topics/gateway#privileged-intents
     /// [Privileged intents]: https://discord.com/developers/docs/topics/gateway#privileged-intents
     /// [the bot must be verified]: https://support.discord.com/hc/en-us/articles/360040720412-Bot-Verification-and-Data-Whitelisting
-    /// [`GatewayIntents::GUILD_PRESENCES`]: crate::client::bridge::gateway::GatewayIntents::GUILD_PRESENCES
-    /// [`GatewayIntents::GUILD_MEMBERS`]: crate::client::bridge::gateway::GatewayIntents::GUILD_MEMBERS
     pub fn intents(mut self, intents: GatewayIntents) -> Self {
         self.intents = intents;
 
         self
     }
 
-    /// Sets an event handler with multiple methods for each possible event.
+    /// Gets the intents. See [`Self::intents`] for more info.
+    pub fn get_intents(&self) -> GatewayIntents {
+        self.intents
+    }
+
+    /// Adds an event handler with multiple methods for each possible event.
     pub fn event_handler<H: EventHandler + 'static>(mut self, event_handler: H) -> Self {
-        self.event_handler = Some(Arc::new(event_handler));
+        self.event_handlers.push(Arc::new(event_handler));
 
         self
     }
 
-    /// Sets an event handler with a single method where all received gateway
-    /// events will be dispatched.
-    pub fn raw_event_handler<H: RawEventHandler + 'static>(mut self, raw_event_handler: H) -> Self {
-        self.raw_event_handler = Some(Arc::new(raw_event_handler));
+    /// Adds an event handler with multiple methods for each possible event. Passed by Arc.
+    pub fn event_handler_arc<H: EventHandler + 'static>(
+        mut self,
+        event_handler_arc: Arc<H>,
+    ) -> Self {
+        self.event_handlers.push(event_handler_arc);
 
         self
+    }
+
+    /// Gets the added event handlers. See [`Self::event_handler`] for more info.
+    pub fn get_event_handlers(&self) -> &[Arc<dyn EventHandler>] {
+        &self.event_handlers
+    }
+
+    /// Adds an event handler with a single method where all received gateway
+    /// events will be dispatched.
+    pub fn raw_event_handler<H: RawEventHandler + 'static>(mut self, raw_event_handler: H) -> Self {
+        self.raw_event_handlers.push(Arc::new(raw_event_handler));
+
+        self
+    }
+
+    /// Gets the added raw event handlers. See [`Self::raw_event_handler`] for more
+    /// info.
+    pub fn get_raw_event_handlers(&self) -> &[Arc<dyn RawEventHandler>] {
+        &self.raw_event_handlers
+    }
+
+    /// Sets the initial activity.
+    pub fn activity(mut self, activity: ActivityData) -> Self {
+        self.presence.activity = Some(activity);
+
+        self
+    }
+
+    /// Sets the initial status.
+    pub fn status(mut self, status: OnlineStatus) -> Self {
+        self.presence.status = status;
+
+        self
+    }
+
+    /// Gets the initial presence. See [`Self::activity`] and [`Self::status`] for more info.
+    pub fn get_presence(&self) -> &PresenceData {
+        &self.presence
     }
 }
 
 #[cfg(feature = "gateway")]
-impl<'a> Future for ClientBuilder<'a> {
+impl IntoFuture for ClientBuilder {
     type Output = Result<Client>;
 
-    #[allow(clippy::unwrap_used)] // Allowing unwrap because all should be Some() by this point
+    type IntoFuture = BoxFuture<'static, Result<Client>>;
+
     #[instrument(skip(self))]
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut FutContext<'_>) -> Poll<Self::Output> {
-        if self.fut.is_none() {
-            let data = Arc::new(RwLock::new(self.data.take().unwrap()));
-            #[cfg(feature = "framework")]
-            let framework = self.framework.take()
-                .expect("The `framework`-feature is enabled (it's on by default), but no framework was provided.\n\
-                If you don't want to use the command framework, disable default features and specify all features you want to use.");
-            let event_handler = self.event_handler.take();
-            let raw_event_handler = self.raw_event_handler.take();
-            let intents = self.intents;
-            let http = Arc::new(self.http.take().unwrap());
+    fn into_future(self) -> Self::IntoFuture {
+        let data = Arc::new(RwLock::new(self.data));
+        #[cfg(feature = "framework")]
+        let framework = self.framework;
+        let event_handlers = self.event_handlers;
+        let raw_event_handlers = self.raw_event_handlers;
+        let intents = self.intents;
+        let presence = self.presence;
 
-            #[cfg(feature = "unstable_discord_api")]
-            if http.application_id == 0 {
-                panic!("Please provide an Application Id in order to use interactions features.");
-            }
+        let mut http = self.http;
 
-            #[cfg(feature = "voice")]
-            let voice_manager = self.voice_manager.take();
-
-            let cache_and_http = Arc::new(CacheAndHttp {
-                #[cfg(feature = "cache")]
-                cache: Arc::new(Cache::new_with_settings(self.cache_settings.take().unwrap())),
-                #[cfg(feature = "cache")]
-                update_cache_timeout: self.timeout.take(),
-                http: Arc::clone(&http),
-            });
-
-            self.fut = Some(Box::pin(async move {
-                let url = Arc::new(Mutex::new(http.get_gateway().await?.url));
-
-                let (shard_manager, shard_manager_worker) = {
-                    ShardManager::new(ShardManagerOptions {
-                        data: &data,
-                        event_handler: &event_handler,
-                        raw_event_handler: &raw_event_handler,
-                        #[cfg(feature = "framework")]
-                        framework: &framework,
-                        shard_index: 0,
-                        shard_init: 0,
-                        shard_total: 0,
-                        #[cfg(feature = "voice")]
-                        voice_manager: &voice_manager,
-                        ws_url: &url,
-                        cache_and_http: &cache_and_http,
-                        intents,
-                    })
-                    .await
-                };
-
-                Ok(Client {
-                    ws_uri: url,
-                    data,
-                    shard_manager,
-                    shard_manager_worker,
-                    #[cfg(feature = "voice")]
-                    voice_manager,
-                    cache_and_http,
-                })
-            }))
+        if let Some(ratelimiter) = &mut http.ratelimiter {
+            let event_handlers_clone = event_handlers.clone();
+            ratelimiter.set_ratelimit_callback(Box::new(move |info| {
+                for event_handler in &event_handlers_clone {
+                    let event_handler = event_handler.clone();
+                    let info = info.clone();
+                    tokio::spawn(async move { event_handler.ratelimit(info).await });
+                }
+            }));
         }
 
-        self.fut.as_mut().unwrap().as_mut().poll(ctx)
+        let http = Arc::new(http);
+
+        #[cfg(feature = "voice")]
+        let voice_manager = self.voice_manager;
+
+        #[cfg(feature = "cache")]
+        let cache = Arc::new(Cache::new_with_settings(self.cache_settings));
+
+        Box::pin(async move {
+            let ws_url = Arc::new(Mutex::new(match http.get_gateway().await {
+                Ok(response) => response.url,
+                Err(err) => {
+                    tracing::warn!("HTTP request to get gateway URL failed: {}", err);
+                    "wss://gateway.discord.gg".to_string()
+                },
+            }));
+
+            #[cfg(feature = "framework")]
+            let framework_cell = Arc::new(OnceCell::new());
+            let (shard_manager, shard_manager_worker) = ShardManager::new(ShardManagerOptions {
+                data: Arc::clone(&data),
+                event_handlers,
+                raw_event_handlers,
+                #[cfg(feature = "framework")]
+                framework: framework_cell.clone(),
+                shard_index: 0,
+                shard_init: 0,
+                shard_total: 0,
+                #[cfg(feature = "voice")]
+                voice_manager: voice_manager.as_ref().map(Arc::clone),
+                ws_url: Arc::clone(&ws_url),
+                #[cfg(feature = "cache")]
+                cache: Arc::clone(&cache),
+                http: Arc::clone(&http),
+                intents,
+                presence: Some(presence),
+            });
+
+            let client = Client {
+                data,
+                shard_manager,
+                shard_manager_worker,
+                #[cfg(feature = "voice")]
+                voice_manager,
+                ws_url,
+                #[cfg(feature = "cache")]
+                cache,
+                http,
+            };
+            #[cfg(feature = "framework")]
+            if let Some(mut framework) = framework {
+                framework.init(&client).await;
+                if let Err(_existing) = framework_cell.set(framework.into()) {
+                    tracing::warn!("overwrote existing contents of framework OnceCell");
+                }
+            }
+            Ok(client)
+        })
     }
 }
 
@@ -449,7 +471,8 @@ impl<'a> Future for ClientBuilder<'a> {
 /// }
 ///
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// let mut client = Client::builder("my token here").event_handler(Handler).await?;
+/// let mut client =
+///     Client::builder("my token here", GatewayIntents::default()).event_handler(Handler).await?;
 ///
 /// client.start().await?;
 /// #   Ok(())
@@ -483,10 +506,11 @@ pub struct Client {
     /// - [`Event::MessageUpdate`]
     ///
     /// ```rust,ignore
-    /// use serenity::prelude::*;
-    /// use serenity::model::prelude::*;
     /// use std::collections::HashMap;
     /// use std::env;
+    ///
+    /// use serenity::model::prelude::*;
+    /// use serenity::prelude::*;
     ///
     /// struct MessageEventCounter;
     ///
@@ -516,7 +540,13 @@ pub struct Client {
     ///     }
     ///
     ///     #[cfg(feature = "cache")]
-    ///     async fn message_update(&self, ctx: Context, _old: Option<Message>, _new: Option<Message>, _: MessageUpdateEvent) {
+    ///     async fn message_update(
+    ///         &self,
+    ///         ctx: Context,
+    ///         _old: Option<Message>,
+    ///         _new: Option<Message>,
+    ///         _: MessageUpdateEvent,
+    ///     ) {
     ///         reg(ctx, "MessageUpdate").await
     ///     }
     ///
@@ -528,7 +558,7 @@ pub struct Client {
     ///
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
     /// let token = std::env::var("DISCORD_TOKEN")?;
-    /// let mut client = Client::builder(&token).event_handler(Handler).await?;
+    /// let mut client = Client::builder(&token, GatewayIntents::default()).event_handler(Handler).await?;
     /// {
     ///     let mut data = client.data.write().await;
     ///     data.insert::<MessageEventCounter>(HashMap::default());
@@ -565,16 +595,17 @@ pub struct Client {
     /// 5 seconds:
     ///
     /// ```rust,no_run
-    /// # use serenity::client::{Client, EventHandler};
+    /// # use serenity::prelude::*;
     /// # use std::time::Duration;
     /// #
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
     /// struct Handler;
     ///
-    /// impl EventHandler for Handler { }
+    /// impl EventHandler for Handler {}
     ///
     /// let token = std::env::var("DISCORD_TOKEN")?;
-    /// let mut client = Client::builder(&token).event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder(&token, GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// let shard_manager = client.shard_manager.clone();
     ///
@@ -595,15 +626,17 @@ pub struct Client {
     ///
     /// ```rust,no_run
     /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// use serenity::client::{Client, EventHandler};
     /// use std::time::Duration;
+    ///
+    /// use serenity::prelude::*;
     ///
     /// struct Handler;
     ///
-    /// impl EventHandler for Handler { }
+    /// impl EventHandler for Handler {}
     ///
     /// let token = std::env::var("DISCORD_TOKEN")?;
-    /// let mut client = Client::builder(&token).event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder(&token, GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// // Create a clone of the `Arc` containing the shard manager.
     /// let shard_manager = client.shard_manager.clone();
@@ -611,7 +644,7 @@ pub struct Client {
     /// // Create a thread which will sleep for 60 seconds and then have the
     /// // shard manager shutdown.
     /// tokio::spawn(async move {
-    ///     tokio::time::sleep(Duration::from_secs(60));
+    ///     tokio::time::sleep(Duration::from_secs(60)).await;
     ///
     ///     shard_manager.lock().await.shutdown_all().await;
     ///
@@ -629,23 +662,25 @@ pub struct Client {
     /// This is an ergonomic structure for interfacing over shards' voice
     /// connections.
     #[cfg(feature = "voice")]
-    pub voice_manager: Option<Arc<dyn VoiceGatewayManager + Send + Sync + 'static>>,
-    /// URI that the client's shards will use to connect to the gateway.
+    pub voice_manager: Option<Arc<dyn VoiceGatewayManager + 'static>>,
+    /// URL that the client's shards will use to connect to the gateway.
     ///
     /// This is likely not important for production usage and is, at best, used
     /// for debugging.
     ///
     /// This is wrapped in an `Arc<Mutex<T>>` so all shards will have an updated
     /// value available.
-    pub ws_uri: Arc<Mutex<String>>,
-    /// A container for an optional cache and HTTP client.
-    /// It also contains the cache update timeout.
-    pub cache_and_http: Arc<CacheAndHttp>,
+    pub ws_url: Arc<Mutex<String>>,
+    /// The cache for the client.
+    #[cfg(feature = "cache")]
+    pub cache: Arc<Cache>,
+    /// An HTTP client.
+    pub http: Arc<Http>,
 }
 
 impl Client {
-    pub fn builder<'a>(token: impl AsRef<str>) -> ClientBuilder<'a> {
-        ClientBuilder::new(token)
+    pub fn builder(token: impl AsRef<str>, intents: GatewayIntents) -> ClientBuilder {
+        ClientBuilder::new(token, intents)
     }
 
     /// Establish the connection and start listening for events.
@@ -666,7 +701,7 @@ impl Client {
     ///
     /// ```rust,no_run
     /// # use std::error::Error;
-    /// # use serenity::prelude::EventHandler;
+    /// # use serenity::prelude::*;
     /// use serenity::Client;
     ///
     /// struct Handler;
@@ -675,7 +710,8 @@ impl Client {
     ///
     /// # async fn run() -> Result<(), Box<dyn Error>> {
     /// let token = std::env::var("DISCORD_TOKEN")?;
-    /// let mut client = Client::builder(&token).event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder(&token, GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// if let Err(why) = client.start().await {
     ///     println!("Err with client: {:?}", why);
@@ -687,7 +723,7 @@ impl Client {
     /// [gateway docs]: crate::gateway#sharding
     #[instrument(skip(self))]
     pub async fn start(&mut self) -> Result<()> {
-        self.start_connection([0, 0, 1]).await
+        self.start_connection(0, 0, 1).await
     }
 
     /// Establish the connection(s) and start listening for events.
@@ -708,7 +744,7 @@ impl Client {
     ///
     /// ```rust,no_run
     /// # use std::error::Error;
-    /// # use serenity::prelude::EventHandler;
+    /// # use serenity::prelude::*;
     /// use serenity::Client;
     ///
     /// struct Handler;
@@ -717,7 +753,8 @@ impl Client {
     ///
     /// # async fn run() -> Result<(), Box<dyn Error>> {
     /// let token = std::env::var("DISCORD_TOKEN")?;
-    /// let mut client = Client::builder(&token).event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder(&token, GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// if let Err(why) = client.start_autosharded().await {
     ///     println!("Err with client: {:?}", why);
@@ -734,13 +771,13 @@ impl Client {
     /// [gateway docs]: crate::gateway#sharding
     #[instrument(skip(self))]
     pub async fn start_autosharded(&mut self) -> Result<()> {
-        let (x, y) = {
-            let res = self.cache_and_http.http.get_bot_gateway().await?;
+        let (end, total) = {
+            let res = self.http.get_bot_gateway().await?;
 
-            (res.shards as u64 - 1, res.shards as u64)
+            (res.shards - 1, res.shards)
         };
 
-        self.start_connection([0, x, y]).await
+        self.start_connection(0, end, total).await
     }
 
     /// Establish a sharded connection and start listening for events.
@@ -761,7 +798,7 @@ impl Client {
     ///
     /// ```rust,no_run
     /// # use std::error::Error;
-    /// # use serenity::prelude::EventHandler;
+    /// # use serenity::prelude::*;
     /// use serenity::Client;
     ///
     /// struct Handler;
@@ -770,7 +807,8 @@ impl Client {
     ///
     /// # async fn run() -> Result<(), Box<dyn Error>> {
     /// let token = std::env::var("DISCORD_TOKEN")?;
-    /// let mut client = Client::builder(&token).event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder(&token, GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// if let Err(why) = client.start_shard(3, 5).await {
     ///     println!("Err with client: {:?}", why);
@@ -784,7 +822,7 @@ impl Client {
     ///
     /// ```rust,no_run
     /// # use std::error::Error;
-    /// # use serenity::prelude::EventHandler;
+    /// # use serenity::prelude::*;
     /// use serenity::Client;
     ///
     /// struct Handler;
@@ -793,7 +831,8 @@ impl Client {
     ///
     /// # async fn run() -> Result<(), Box<dyn Error>> {
     /// let token = std::env::var("DISCORD_TOKEN")?;
-    /// let mut client = Client::builder(&token).event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder(&token, GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// if let Err(why) = client.start_shard(0, 1).await {
     ///     println!("Err with client: {:?}", why);
@@ -809,8 +848,8 @@ impl Client {
     ///
     /// [gateway docs]: crate::gateway#sharding
     #[instrument(skip(self))]
-    pub async fn start_shard(&mut self, shard: u64, shards: u64) -> Result<()> {
-        self.start_connection([shard, shard, shards]).await
+    pub async fn start_shard(&mut self, shard: u32, shards: u32) -> Result<()> {
+        self.start_connection(shard, shard, shards).await
     }
 
     /// Establish sharded connections and start listening for events.
@@ -831,7 +870,7 @@ impl Client {
     ///
     /// ```rust,no_run
     /// # use std::error::Error;
-    /// # use serenity::prelude::EventHandler;
+    /// # use serenity::prelude::*;
     /// use serenity::Client;
     ///
     /// struct Handler;
@@ -840,7 +879,8 @@ impl Client {
     ///
     /// # async fn run() -> Result<(), Box<dyn Error>> {
     /// let token = std::env::var("DISCORD_TOKEN")?;
-    /// let mut client = Client::builder(&token).event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder(&token, GatewayIntents::default()).event_handler(Handler).await?;
     ///
     /// if let Err(why) = client.start_shards(8).await {
     ///     println!("Err with client: {:?}", why);
@@ -856,8 +896,8 @@ impl Client {
     ///
     /// [Gateway docs]: crate::gateway#sharding
     #[instrument(skip(self))]
-    pub async fn start_shards(&mut self, total_shards: u64) -> Result<()> {
-        self.start_connection([0, total_shards - 1, total_shards]).await
+    pub async fn start_shards(&mut self, total_shards: u32) -> Result<()> {
+        self.start_connection(0, total_shards - 1, total_shards).await
     }
 
     /// Establish a range of sharded connections and start listening for events.
@@ -879,7 +919,7 @@ impl Client {
     ///
     /// ```rust,no_run
     /// # use std::error::Error;
-    /// # use serenity::prelude::EventHandler;
+    /// # use serenity::prelude::*;
     /// use serenity::Client;
     ///
     /// struct Handler;
@@ -888,9 +928,10 @@ impl Client {
     ///
     /// # async fn run() -> Result<(), Box<dyn Error>> {
     /// let token = std::env::var("DISCORD_TOKEN")?;
-    /// let mut client = Client::builder(&token).event_handler(Handler).await?;
+    /// let mut client =
+    ///     Client::builder(&token, GatewayIntents::default()).event_handler(Handler).await?;
     ///
-    /// if let Err(why) = client.start_shard_range([4, 7], 10).await {
+    /// if let Err(why) = client.start_shard_range(4..7, 10).await {
     ///     println!("Err with client: {:?}", why);
     /// }
     /// # Ok(())
@@ -904,8 +945,8 @@ impl Client {
     ///
     /// [Gateway docs]: crate::gateway#sharding
     #[instrument(skip(self))]
-    pub async fn start_shard_range(&mut self, range: [u64; 2], total_shards: u64) -> Result<()> {
-        self.start_connection([range[0], range[1], total_shards]).await
+    pub async fn start_shard_range(&mut self, range: Range<u32>, total_shards: u32) -> Result<()> {
+        self.start_connection(range.start, range.end, total_shards).await
     }
 
     /// Shard data layout is:
@@ -920,22 +961,27 @@ impl Client {
     /// Returns a [`ClientError::Shutdown`] when all shards have shutdown due to
     /// an error.
     #[instrument(skip(self))]
-    async fn start_connection(&mut self, shard_data: [u64; 3]) -> Result<()> {
+    async fn start_connection(
+        &mut self,
+        start_shard: u32,
+        end_shard: u32,
+        total_shards: u32,
+    ) -> Result<()> {
         #[cfg(feature = "voice")]
         if let Some(voice_manager) = &self.voice_manager {
-            let user = self.cache_and_http.http.get_current_user().await?;
+            let user = self.http.get_current_user().await?;
 
-            voice_manager.initialise(shard_data[2], user.id).await;
+            voice_manager.initialise(total_shards, user.id).await;
         }
 
         {
             let mut manager = self.shard_manager.lock().await;
 
-            let init = shard_data[1] - shard_data[0] + 1;
+            let init = end_shard - start_shard + 1;
 
-            manager.set_shards(shard_data[0], init, shard_data[2]).await;
+            manager.set_shards(start_shard, init, total_shards).await;
 
-            debug!("Initializing shard info: {} - {}/{}", shard_data[0], init, shard_data[2],);
+            debug!("Initializing shard info: {} - {}/{}", start_shard, init, total_shards);
 
             if let Err(why) = manager.initialize() {
                 error!("Failed to boot a shard: {:?}", why);
@@ -960,85 +1006,4 @@ impl Client {
 
         Ok(())
     }
-}
-
-/// Validates that a token is likely in a valid format.
-///
-/// This performs the following checks on a given token:
-///
-/// - At least one character long;
-/// - Contains 3 parts (split by the period char `'.'`);
-/// - The second part of the token is at least 6 characters long;
-/// - The token does not contain any whitespace prior to or after the token.
-///
-/// # Examples
-///
-/// Validate that a token is valid and that a number of invalid tokens are
-/// actually invalid:
-///
-/// ```rust,no_run
-/// use serenity::client::validate_token;
-///
-/// // ensure a valid token is in fact valid:
-/// assert!(validate_token("Mjg4NzYwMjQxMzYzODc3ODg4.C_ikow.j3VupLBuE1QWZng3TMGH0z_UAwg").is_ok());
-///
-/// // helpful to prevent typos
-/// assert!(validate_token("Njg4NzYwMjQxMzYzODc3ODg4.C_ikow.j3VupLBuE1QWZng3TMGH0z_UAwg").is_err());
-/// ```
-///
-/// # Errors
-///
-/// Returns a [`ClientError::InvalidToken`] when one of the above checks fail.
-/// The type of failure is not specified.
-pub fn validate_token(token: impl AsRef<str>) -> Result<()> {
-    if parse_token(token.as_ref()).is_some() {
-        Ok(())
-    } else {
-        Err(Error::Client(ClientError::InvalidToken))
-    }
-}
-
-/// Part of the data contained within a Discord bot token. Returned by [`parse_token`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TokenComponents {
-    pub bot_user_id: UserId,
-    pub creation_time: chrono::NaiveDateTime,
-}
-
-/// Verifies that the token adheres to the Discord token format and extracts the bot user ID and the
-/// token generation timestamp
-pub fn parse_token(token: impl AsRef<str>) -> Option<TokenComponents> {
-    // The token consists of three base64-encoded parts
-    let parts: Vec<&str> = token.as_ref().split('.').collect();
-    let base64_config = base64::Config::new(base64::CharacterSet::UrlSafe, true);
-
-    // First part must be a base64-encoded stringified user ID
-    let user_id = base64::decode_config(parts.get(0)?, base64_config).ok()?;
-    let user_id = UserId(std::str::from_utf8(&user_id).ok()?.parse().ok()?);
-
-    // Second part must be a base64-encoded token generation timestamp
-    let timestamp_base64 = parts.get(1)?;
-    // The base64-encoded timestamp must be at least 6 characters
-    if timestamp_base64.len() < 6 {
-        return None;
-    }
-    let timestamp_bytes = base64::decode_config(timestamp_base64, base64_config).ok()?;
-    let mut timestamp = 0;
-    for byte in timestamp_bytes {
-        timestamp *= 256;
-        timestamp += byte as u64;
-    }
-    // Some timestamps are based on the Discord epoch. Convert to Unix epoch
-    if timestamp < 1293840000 {
-        timestamp += 1293840000;
-    }
-    let timestamp = chrono::NaiveDateTime::from_timestamp_opt(timestamp as i64, 0)?;
-
-    // Third part is a base64-encoded HMAC that's not interesting on its own
-    let _ = base64::decode_config(parts.get(2)?, base64_config).ok()?;
-
-    Some(TokenComponents {
-        bot_user_id: user_id,
-        creation_time: timestamp,
-    })
 }

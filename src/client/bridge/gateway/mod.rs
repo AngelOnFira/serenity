@@ -44,7 +44,6 @@
 
 pub mod event;
 
-mod intents;
 mod shard_manager;
 mod shard_manager_monitor;
 mod shard_messenger;
@@ -52,12 +51,9 @@ mod shard_queuer;
 mod shard_runner;
 mod shard_runner_message;
 
-use std::{
-    fmt::{Display, Formatter, Result as FmtResult},
-    time::Duration as StdDuration,
-};
+use std::fmt;
+use std::time::Duration as StdDuration;
 
-pub use self::intents::GatewayIntents;
 pub use self::shard_manager::{ShardManager, ShardManagerOptions};
 pub use self::shard_manager_monitor::{ShardManagerError, ShardManagerMonitor};
 pub use self::shard_messenger::ShardMessenger;
@@ -65,20 +61,19 @@ pub use self::shard_queuer::ShardQueuer;
 pub use self::shard_runner::{ShardRunner, ShardRunnerOptions};
 pub use self::shard_runner_message::{ChunkGuildFilter, ShardRunnerMessage};
 use crate::gateway::ConnectionStage;
+use crate::model::event::Event;
 
 /// A message either for a [`ShardManager`] or a [`ShardRunner`].
-// Once we can use `Box` as part of a pattern, we will reconsider boxing.
-#[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ShardClientMessage {
     /// A message intended to be worked with by a [`ShardManager`].
     Manager(ShardManagerMessage),
     /// A message intended to be worked with by a [`ShardRunner`].
-    Runner(ShardRunnerMessage),
+    Runner(Box<ShardRunnerMessage>),
 }
 
 /// A message for a [`ShardManager`] relating to an operation with a shard.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ShardManagerMessage {
     /// Indicator that a [`ShardManagerMonitor`] should restart a shard.
     Restart(ShardId),
@@ -129,13 +124,13 @@ pub enum ShardQueuerMessage {
     ShutdownShard(ShardId, u16),
 }
 
-/// A light tuplestruct wrapper around a u64 to verify type correctness when
+/// A light tuplestruct wrapper around a u32 to verify type correctness when
 /// working with the IDs of shards.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
-pub struct ShardId(pub u64);
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ShardId(pub u32);
 
-impl Display for ShardId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+impl fmt::Display for ShardId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
@@ -159,5 +154,15 @@ pub struct ShardRunnerInfo {
 impl AsRef<ShardMessenger> for ShardRunnerInfo {
     fn as_ref(&self) -> &ShardMessenger {
         &self.runner_tx
+    }
+}
+
+/// Newtype around a callback that will be called on every incoming request. As long as this
+/// collector should still receive events, it should return `true`. Once it returns `false`, it is
+/// removed.
+pub struct CollectorCallback(pub Box<dyn Fn(&Event) -> bool + Send + Sync>);
+impl std::fmt::Debug for CollectorCallback {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("CollectorCallback").finish()
     }
 }

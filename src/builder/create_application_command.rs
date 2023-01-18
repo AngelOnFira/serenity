@@ -1,243 +1,437 @@
 use std::collections::HashMap;
 
-use serde_json::{json, Value};
+#[cfg(feature = "http")]
+use crate::http::Http;
+use crate::internal::prelude::*;
+use crate::model::prelude::*;
 
-use crate::{model::interactions::application_command::ApplicationCommandOptionType, utils};
-
-/// A builder for creating a new [`ApplicationCommandOption`].
+/// A builder for creating a new [`CommandOption`].
 ///
 /// [`Self::kind`], [`Self::name`], and [`Self::description`] are required fields.
 ///
-/// [`ApplicationCommandOption`]: crate::model::interactions::application_command::ApplicationCommandOption
-/// [`kind`]: Self::kind
-/// [`name`]: Self::name
-/// [`description`]: Self::description
-#[derive(Clone, Debug, Default)]
-pub struct CreateApplicationCommandOption(pub HashMap<&'static str, Value>);
+/// [`CommandOption`]: crate::model::application::CommandOption
+///
+/// [Discord docs](https://discord.com/developers/docs/interactions/application-commands#application-command-object-application-command-option-structure).
+#[derive(Clone, Debug, Serialize)]
+#[must_use]
+pub struct CreateCommandOption(CommandOption);
 
-impl CreateApplicationCommandOption {
-    /// Sets the ApplicationCommandOptionType.
-    pub fn kind(&mut self, kind: ApplicationCommandOptionType) -> &mut Self {
-        self.0.insert("type", Value::Number(serde_json::Number::from(kind as u8)));
+impl CreateCommandOption {
+    /// Creates a new builder with the given option type, name, and description, leaving all other
+    /// fields empty.
+    pub fn new(
+        kind: CommandOptionType,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self(CommandOption {
+            kind,
+            name: name.into(),
+            name_localizations: None,
+            description: description.into(),
+            description_localizations: None,
+            required: false,
+            autocomplete: false,
+            min_value: None,
+            max_value: None,
+            min_length: None,
+            max_length: None,
+
+            channel_types: Vec::new(),
+            choices: Vec::new(),
+            options: Vec::new(),
+        })
+    }
+
+    /// Sets the `CommandOptionType`, replacing the current value as set in [`Self::new`].
+    pub fn kind(mut self, kind: CommandOptionType) -> Self {
+        self.0.kind = kind;
         self
     }
 
-    /// Sets the name of the option.
+    /// Sets the name of the option, replacing the current value as set in [`Self::new`].
     ///
     /// **Note**: Must be between 1 and 32 lowercase characters, matching `r"^[\w-]{1,32}$"`.
-    pub fn name<D: ToString>(&mut self, name: D) -> &mut Self {
-        self.0.insert("name", Value::String(name.to_string()));
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.0.name = name.into();
         self
     }
 
-    /// Sets the description for the option.
+    /// Specifies a localized name of the option.
+    ///
+    /// ```rust
+    /// # use serenity::builder::CreateCommandOption;
+    /// # use serenity::model::application::CommandOptionType;
+    /// # CreateCommandOption::new(CommandOptionType::Integer, "", "")
+    /// .name("age")
+    /// .name_localized("zh-CN", "岁数")
+    /// # ;
+    /// ```
+    pub fn name_localized(mut self, locale: impl Into<String>, name: impl Into<String>) -> Self {
+        let map = self.0.name_localizations.get_or_insert_with(Default::default);
+        map.insert(locale.into(), name.into());
+        self
+    }
+
+    /// Sets the description for the option, replacing the current value as set in [`Self::new]`.
     ///
     /// **Note**: Must be between 1 and 100 characters.
-    pub fn description<D: ToString>(&mut self, description: D) -> &mut Self {
-        self.0.insert("description", Value::String(description.to_string()));
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.0.description = description.into();
         self
     }
-
-    /// The first required option for the user to complete.
+    /// Specifies a localized description of the option.
     ///
-    /// **Note**: Only one option can be `default`.
-    pub fn default_option(&mut self, default: bool) -> &mut Self {
-        self.0.insert("default", Value::Bool(default));
+    /// ```rust
+    /// # use serenity::builder::CreateCommandOption;
+    /// # use serenity::model::application::CommandOptionType;
+    /// # CreateCommandOption::new(CommandOptionType::String, "", "")
+    /// .description("Wish a friend a happy birthday")
+    /// .description_localized("zh-CN", "祝你朋友生日快乐")
+    /// # ;
+    /// ```
+    pub fn description_localized(
+        mut self,
+        locale: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        let map = self.0.description_localizations.get_or_insert_with(Default::default);
+        map.insert(locale.into(), description.into());
         self
     }
 
     /// Sets if this option is required or optional.
     ///
     /// **Note**: This defaults to `false`.
-    pub fn required(&mut self, required: bool) -> &mut Self {
-        self.0.insert("required", Value::Bool(required));
+    pub fn required(mut self, required: bool) -> Self {
+        self.0.required = required;
         self
     }
 
     /// Adds an optional int-choice.
     ///
-    /// **Note**: There can be no more than 25 choices set. Name must be between 1 and 100 characters. Value must be between -2^53 and 2^53.
-    pub fn add_int_choice<D: ToString>(&mut self, name: D, value: i32) -> &mut Self {
-        let choice = json!({
-            "name": name.to_string(),
-            "value" : value
-        });
-        self.add_choice(choice)
+    /// **Note**: There can be no more than 25 choices set. Name must be between 1 and 100
+    /// characters. Value must be between -2^53 and 2^53.
+    pub fn add_int_choice(self, name: impl Into<String>, value: i32) -> Self {
+        self.add_choice(CommandOptionChoice {
+            name: name.into(),
+            value: Value::from(value),
+            name_localizations: None,
+        })
+    }
+
+    /// Adds a localized optional int-choice. See [`Self::add_int_choice`] for more info.
+    pub fn add_int_choice_localized(
+        self,
+        name: impl Into<String>,
+        value: i32,
+        locales: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.add_choice(CommandOptionChoice {
+            name: name.into(),
+            value: Value::from(value),
+            name_localizations: Some(
+                locales.into_iter().map(|(l, n)| (l.into(), n.into())).collect(),
+            ),
+        })
     }
 
     /// Adds an optional string-choice.
     ///
-    /// **Note**: There can be no more than 25 choices set. Name must be between 1 and 100 characters. Value must be up to 100 characters.
-    pub fn add_string_choice<D: ToString, E: ToString>(&mut self, name: D, value: E) -> &mut Self {
-        let choice = json!({
-            "name": name.to_string(),
-            "value": value.to_string()
-        });
-        self.add_choice(choice)
+    /// **Note**: There can be no more than 25 choices set. Name must be between 1 and 100
+    /// characters. Value must be up to 100 characters.
+    pub fn add_string_choice(self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.add_choice(CommandOptionChoice {
+            name: name.into(),
+            value: Value::String(value.into()),
+            name_localizations: None,
+        })
+    }
+
+    /// Adds a localized optional string-choice. See [`Self::add_string_choice`] for more info.
+    pub fn add_string_choice_localized(
+        self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        locales: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.add_choice(CommandOptionChoice {
+            name: name.into(),
+            value: Value::String(value.into()),
+            name_localizations: Some(
+                locales.into_iter().map(|(l, n)| (l.into(), n.into())).collect(),
+            ),
+        })
     }
 
     /// Adds an optional number-choice.
     ///
-    /// **Note**: There can be no more than 25 choices set. Name must be between 1 and 100 characters. Value must be between -2^53 and 2^53.
-    pub fn add_number_choice<D: ToString>(&mut self, name: D, value: f64) -> &mut Self {
-        let choice = json!({
-            "name": name.to_string(),
-            "value" : value
-        });
-        self.add_choice(choice)
+    /// **Note**: There can be no more than 25 choices set. Name must be between 1 and 100
+    /// characters. Value must be between -2^53 and 2^53.
+    pub fn add_number_choice(self, name: impl Into<String>, value: f64) -> Self {
+        self.add_choice(CommandOptionChoice {
+            name: name.into(),
+            value: Value::from(value),
+            name_localizations: None,
+        })
     }
 
-    fn add_choice(&mut self, value: Value) -> &mut Self {
-        let choices = self.0.entry("choices").or_insert_with(|| Value::Array(Vec::new()));
-        let choices_arr = choices.as_array_mut().expect("Must be an array");
-        choices_arr.push(value);
+    /// Adds a localized optional number-choice. See [`Self::add_number_choice`] for more info.
+    pub fn add_number_choice_localized(
+        self,
+        name: impl Into<String>,
+        value: f64,
+        locales: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.add_choice(CommandOptionChoice {
+            name: name.into(),
+            value: Value::from(value),
+            name_localizations: Some(
+                locales.into_iter().map(|(l, n)| (l.into(), n.into())).collect(),
+            ),
+        })
+    }
 
+    fn add_choice(mut self, value: CommandOptionChoice) -> Self {
+        self.0.choices.push(value);
+        self
+    }
+
+    /// Optionally enable/disable autocomplete interactions for this option.
+    ///
+    /// **Notes**:
+    /// - May not be set to `true` if `choices` are set
+    /// - Options using `autocomplete` are not confined to only use given choices
+    pub fn set_autocomplete(mut self, value: bool) -> Self {
+        self.0.autocomplete = value;
         self
     }
 
     /// If the option is a [`SubCommandGroup`] or [`SubCommand`], nested options are its parameters.
     ///
-    /// **Note**: A command can have up to 25 subcommand groups, or subcommands. A subcommand group can have up to 25 subcommands. A subcommand can have up to 25 options.
+    /// **Note**: A command can have up to 25 subcommand groups, or subcommands. A subcommand group
+    /// can have up to 25 subcommands. A subcommand can have up to 25 options.
     ///
-    /// [`SubCommandGroup`]: crate::model::interactions::application_command::ApplicationCommandOptionType::SubCommandGroup
-    /// [`SubCommand`]: crate::model::interactions::application_command::ApplicationCommandOptionType::SubCommand
-    pub fn create_sub_option<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut CreateApplicationCommandOption) -> &mut CreateApplicationCommandOption,
-    {
-        let mut data = CreateApplicationCommandOption::default();
-        f(&mut data);
-        self.add_sub_option(data)
+    /// [`SubCommandGroup`]: crate::model::application::CommandOptionType::SubCommandGroup
+    /// [`SubCommand`]: crate::model::application::CommandOptionType::SubCommand
+    pub fn add_sub_option(mut self, sub_option: CreateCommandOption) -> Self {
+        self.0.options.push(sub_option.0);
+        self
     }
 
-    /// If the option is a [`SubCommandGroup`] or [`SubCommand`], nested options are its parameters.
+    /// If the option is a [`Channel`], it will only be able to show these types.
     ///
-    /// **Note**: A command can have up to 25 subcommand groups, or subcommands. A subcommand group can have up to 25 subcommands. A subcommand can have up to 25 options.
+    /// [`Channel`]: crate::model::application::CommandOptionType::Channel
+    pub fn channel_types(mut self, channel_types: Vec<ChannelType>) -> Self {
+        self.0.channel_types = channel_types;
+        self
+    }
+
+    /// Sets the minimum permitted value for this integer option
+    pub fn min_int_value(mut self, value: u64) -> Self {
+        self.0.min_value = Some(value.into());
+        self
+    }
+
+    /// Sets the maximum permitted value for this integer option
+    pub fn max_int_value(mut self, value: u64) -> Self {
+        self.0.max_value = Some(value.into());
+        self
+    }
+
+    /// Sets the minimum permitted value for this number option
+    pub fn min_number_value(mut self, value: f64) -> Self {
+        self.0.min_value = serde_json::Number::from_f64(value);
+        self
+    }
+
+    /// Sets the maximum permitted value for this number option
+    pub fn max_number_value(mut self, value: f64) -> Self {
+        self.0.max_value = serde_json::Number::from_f64(value);
+        self
+    }
+
+    /// Sets the minimum permitted length for this string option.
     ///
-    /// [`SubCommandGroup`]: crate::model::interactions::application_command::ApplicationCommandOptionType::SubCommandGroup
-    /// [`SubCommand`]: crate::model::interactions::application_command::ApplicationCommandOptionType::SubCommand
-    pub fn add_sub_option(&mut self, sub_option: CreateApplicationCommandOption) -> &mut Self {
-        let new_option = utils::hashmap_to_json_map(sub_option.0);
-        let options = self.0.entry("options").or_insert_with(|| Value::Array(Vec::new()));
-        let opt_arr = options.as_array_mut().expect("Must be an array");
-        opt_arr.push(Value::Object(new_option));
+    /// The value of `min_length` must be greater or equal to `0`.
+    pub fn min_length(&mut self, value: u16) -> &mut Self {
+        self.0.min_length = Some(value);
+
+        self
+    }
+
+    /// Sets the maximum permitted length for this string option.
+    ///
+    /// The value of `max_length` must be greater or equal to `1`.
+    pub fn max_length(&mut self, value: u16) -> &mut Self {
+        self.0.max_length = Some(value);
 
         self
     }
 }
 
-/// A builder for creating a new [`ApplicationCommand`].
+/// A builder for creating a new [`Command`].
 ///
 /// [`Self::name`] and [`Self::description`] are required fields.
 ///
-/// [`ApplicationCommand`]: crate::model::interactions::application_command::ApplicationCommand
-#[derive(Clone, Debug, Default)]
-pub struct CreateApplicationCommand(pub HashMap<&'static str, Value>);
+/// [`Command`]: crate::model::application::Command
+///
+/// Discord docs:
+/// - [global command](https://discord.com/developers/docs/interactions/application-commands#create-global-application-command-json-params)
+/// - [guild command](https://discord.com/developers/docs/interactions/application-commands#create-guild-application-command-json-params)
+#[derive(Clone, Debug, Serialize)]
+#[must_use]
+pub struct CreateCommand {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type")]
+    kind: Option<CommandType>,
 
-impl CreateApplicationCommand {
-    /// Specifies the name of the application command.
+    name: String,
+    name_localizations: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    description_localizations: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_member_permissions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dm_permission: Option<bool>,
+
+    options: Vec<CreateCommandOption>,
+}
+
+impl CreateCommand {
+    /// Creates a new builder with the given name and description, leaving all other fields empty.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            kind: None,
+
+            name: name.into(),
+            name_localizations: HashMap::new(),
+            description: None,
+            description_localizations: HashMap::new(),
+            default_member_permissions: None,
+            dm_permission: None,
+
+            options: Vec::new(),
+        }
+    }
+
+    /// Create a [`Command`], overriding an existing one with the same name if it exists.
     ///
-    /// **Note**: Must be between 1 and 32 lowercase characters, matching `r"^[\w-]{1,32}$"`. Two global commands of the same app cannot have the same name. Two guild-specific commands of the same app cannot have the same name.
-    pub fn name<D: ToString>(&mut self, name: D) -> &mut Self {
-        self.0.insert("name", Value::String(name.to_string()));
+    /// Providing a `command_id` will edit the corresponding command.
+    ///
+    /// Providing a `guild_id` will create a command in the corresponding [`Guild`]. Otherwise, a
+    /// global command will be created.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Http`] if invalid data is given. See [Discord's docs] for more details.
+    ///
+    /// May also return [`Error::Json`] if there is an error in deserializing the API response.
+    ///
+    /// [Discord's docs]: https://discord.com/developers/docs/interactions/slash-commands
+    #[cfg(feature = "http")]
+    pub async fn execute(
+        self,
+        http: impl AsRef<Http>,
+        guild_id: Option<GuildId>,
+        command_id: Option<CommandId>,
+    ) -> Result<Command> {
+        let http = http.as_ref();
+        match (guild_id, command_id) {
+            (Some(guild_id), Some(command_id)) => {
+                http.edit_guild_application_command(guild_id, command_id, &self).await
+            },
+            (Some(guild_id), None) => http.create_guild_application_command(guild_id, &self).await,
+            (None, Some(command_id)) => {
+                http.edit_global_application_command(command_id, &self).await
+            },
+            (None, None) => http.create_global_application_command(&self).await,
+        }
+    }
+
+    /// Specifies the name of the application command, replacing the current value as set in
+    /// [`Self::new]`.
+    ///
+    /// **Note**: Must be between 1 and 32 lowercase characters, matching `r"^[\w-]{1,32}$"`. Two
+    /// global commands of the same app cannot have the same name. Two guild-specific commands of
+    /// the same app cannot have the same name.
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
         self
     }
 
-    /// Specifies if the command should not be usable by default
+    /// Specifies a localized name of the application command.
     ///
-    /// **Note**: Setting it to false will disable it for anyone,
-    /// including administrators and guild owners.
-    pub fn default_permission(&mut self, default_permission: bool) -> &mut Self {
-        self.0.insert("default_permission", Value::Bool(default_permission));
-
+    /// ```rust
+    /// # serenity::builder::CreateCommand::new("")
+    /// .name("birthday")
+    /// .name_localized("zh-CN", "生日")
+    /// .name_localized("el", "γενέθλια")
+    /// # ;
+    /// ```
+    pub fn name_localized(mut self, locale: impl Into<String>, name: impl Into<String>) -> Self {
+        self.name_localizations.insert(locale.into(), name.into());
         self
     }
 
-    /// Specifies the description of the application command.
+    /// Specifies the type of the application command.
+    pub fn kind(mut self, kind: CommandType) -> Self {
+        self.kind = Some(kind);
+        self
+    }
+
+    /// Specifies the default permissions required to execute the command.
+    pub fn default_member_permissions(mut self, permissions: Permissions) -> Self {
+        self.default_member_permissions = Some(permissions.bits().to_string());
+        self
+    }
+
+    /// Specifies if the command is available in DMs.
+    pub fn dm_permission(mut self, enabled: bool) -> Self {
+        self.dm_permission = Some(enabled);
+        self
+    }
+
+    /// Specifies the description of the application command, replacing the current value as set in
+    /// [`Self::new`].
     ///
     /// **Note**: Must be between 1 and 100 characters long.
-    pub fn description<D: ToString>(&mut self, description: D) -> &mut Self {
-        self.0.insert("description", Value::String(description.to_string()));
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
         self
     }
 
-    /// Creates an application command option for the application command.
+    /// Specifies a localized description of the application command.
     ///
-    /// **Note**: Application commands can have up to 25 options.
-    pub fn create_option<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut CreateApplicationCommandOption) -> &mut CreateApplicationCommandOption,
-    {
-        let mut data = CreateApplicationCommandOption::default();
-        f(&mut data);
-        self.add_option(data)
+    /// ```rust
+    /// # serenity::builder::CreateCommand::new("")
+    /// .description("Wish a friend a happy birthday")
+    /// .description_localized("zh-CN", "祝你朋友生日快乐")
+    /// # ;
+    /// ```
+    pub fn description_localized(
+        mut self,
+        locale: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        self.description_localizations.insert(locale.into(), description.into());
+        self
     }
 
     /// Adds an application command option for the application command.
     ///
     /// **Note**: Application commands can have up to 25 options.
-    pub fn add_option(&mut self, option: CreateApplicationCommandOption) -> &mut Self {
-        let new_option = utils::hashmap_to_json_map(option.0);
-        let options = self.0.entry("options").or_insert_with(|| Value::Array(Vec::new()));
-        let opt_arr = options.as_array_mut().expect("Must be an array");
-        opt_arr.push(Value::Object(new_option));
-
+    pub fn add_option(mut self, option: CreateCommandOption) -> Self {
+        self.options.push(option);
         self
     }
 
     /// Sets all the application command options for the application command.
     ///
     /// **Note**: Application commands can have up to 25 options.
-    pub fn set_options(&mut self, options: Vec<CreateApplicationCommandOption>) -> &mut Self {
-        let new_options = options
-            .into_iter()
-            .map(|f| Value::Object(utils::hashmap_to_json_map(f.0)))
-            .collect::<Vec<Value>>();
-        self.0.insert("options", Value::Array(new_options));
-        self
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct CreateApplicationCommands(pub Vec<Value>);
-
-impl CreateApplicationCommands {
-    /// Creates a new application command.
-    pub fn create_application_command<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut CreateApplicationCommand) -> &mut CreateApplicationCommand,
-    {
-        let mut data = CreateApplicationCommand::default();
-        f(&mut data);
-
-        self.add_application_command(data);
-
-        self
-    }
-
-    /// Adds a new application command.
-    pub fn add_application_command(&mut self, command: CreateApplicationCommand) -> &mut Self {
-        let new_data = Value::Object(utils::hashmap_to_json_map(command.0));
-
-        self.0.push(new_data);
-
-        self
-    }
-
-    /// Sets all the application commands.
-    pub fn set_application_commands(
-        &mut self,
-        commands: Vec<CreateApplicationCommand>,
-    ) -> &mut Self {
-        let new_application_command = commands
-            .into_iter()
-            .map(|f| Value::Object(utils::hashmap_to_json_map(f.0)))
-            .collect::<Vec<Value>>();
-
-        for application_command in new_application_command {
-            self.0.push(application_command);
-        }
-
+    pub fn set_options(mut self, options: Vec<CreateCommandOption>) -> Self {
+        self.options = options;
         self
     }
 }

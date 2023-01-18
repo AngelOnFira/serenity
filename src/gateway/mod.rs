@@ -1,5 +1,5 @@
 //! The gateway module contains the pieces - primarily the `Shard` -
-//! responsible for maintaing a WebSocket connection with Discord.
+//! responsible for maintaining a WebSocket connection with Discord.
 //!
 //! A shard is an interface for the lower-level receiver and sender. It provides
 //! what can otherwise be thought of as "sugar methods". A shard represents a
@@ -48,31 +48,118 @@
 
 mod error;
 mod shard;
-mod ws_client_ext;
+mod ws;
 
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::fmt;
 
-use serde_json::Value;
-
-pub use self::{
-    error::Error as GatewayError,
-    shard::Shard,
-    ws_client_ext::WebSocketGatewayClientExt,
-};
+#[cfg(feature = "http")]
+use reqwest::IntoUrl;
+use reqwest::Url;
 #[cfg(feature = "client")]
-use crate::client::bridge::gateway::ShardClientMessage;
-use crate::model::{gateway::Activity, user::OnlineStatus};
+use tokio_tungstenite::tungstenite;
 
-pub type CurrentPresence = (Option<Activity>, OnlineStatus);
+pub use self::error::Error as GatewayError;
+pub use self::shard::Shard;
+pub use self::ws::WsClient;
+#[cfg(feature = "client")]
+use crate::client::bridge::gateway::{ShardClientMessage, ShardRunnerMessage};
+#[cfg(feature = "http")]
+use crate::internal::prelude::*;
+use crate::model::gateway::{Activity, ActivityType};
+use crate::model::id::UserId;
+use crate::model::user::OnlineStatus;
 
-use async_tungstenite::{tokio::ConnectStream, WebSocketStream};
+/// Presence data of the current user.
+#[derive(Clone, Debug, Default)]
+pub struct PresenceData {
+    /// The current activity, if present
+    pub activity: Option<ActivityData>,
+    /// The current online status
+    pub status: OnlineStatus,
+}
 
-pub type WsStream = WebSocketStream<ConnectStream>;
+/// Activity data of the current user.
+#[derive(Clone, Debug, Serialize)]
+pub struct ActivityData {
+    /// The name of the activity
+    pub name: String,
+    /// The type of the activity
+    #[serde(rename = "type")]
+    pub kind: ActivityType,
+    /// The url of the activity, if the type is [`ActivityType::Streaming`]
+    pub url: Option<Url>,
+}
+
+impl ActivityData {
+    /// Creates an activity that appears as `Playing <name>`.
+    #[must_use]
+    pub fn playing(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind: ActivityType::Playing,
+            url: None,
+        }
+    }
+
+    /// Creates an activity that appears as `Streaming <name>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the URL parsing fails.
+    #[cfg(feature = "http")]
+    pub fn streaming(name: impl Into<String>, url: impl IntoUrl) -> Result<Self> {
+        Ok(Self {
+            name: name.into(),
+            kind: ActivityType::Streaming,
+            url: Some(url.into_url()?),
+        })
+    }
+
+    /// Creates an activity that appears as `Listening to <name>`.
+    #[must_use]
+    pub fn listening(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind: ActivityType::Listening,
+            url: None,
+        }
+    }
+
+    /// Creates an activity that appears as `Watching <name>`.
+    #[must_use]
+    pub fn watching(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind: ActivityType::Watching,
+            url: None,
+        }
+    }
+
+    /// Creates an activity that appears as `Competing in <name>`.
+    #[must_use]
+    pub fn competing(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind: ActivityType::Competing,
+            url: None,
+        }
+    }
+}
+
+impl From<Activity> for ActivityData {
+    fn from(activity: Activity) -> Self {
+        Self {
+            name: activity.name,
+            kind: activity.kind,
+            url: activity.url,
+        }
+    }
+}
 
 /// Indicates the current connection stage of a [`Shard`].
 ///
 /// This can be useful for knowing which shards are currently "down"/"up".
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum ConnectionStage {
     /// Indicator that the [`Shard`] is normally connected and is not in, e.g.,
@@ -123,27 +210,22 @@ impl ConnectionStage {
     ///
     /// assert!(!ConnectionStage::Connected.is_connecting());
     /// ```
+    #[must_use]
     pub fn is_connecting(self) -> bool {
-        use self::ConnectionStage::*;
-
-        match self {
-            Connecting | Handshake | Identifying | Resuming => true,
-            Connected | Disconnected => false,
-        }
+        use self::ConnectionStage::{Connecting, Handshake, Identifying, Resuming};
+        matches!(self, Connecting | Handshake | Identifying | Resuming)
     }
 }
 
-impl Display for ConnectionStage {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        use self::ConnectionStage::*;
-
+impl fmt::Display for ConnectionStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match *self {
-            Connected => "connected",
-            Connecting => "connecting",
-            Disconnected => "disconnected",
-            Handshake => "handshaking",
-            Identifying => "identifying",
-            Resuming => "resuming",
+            Self::Connected => "connected",
+            Self::Connecting => "connecting",
+            Self::Disconnected => "disconnected",
+            Self::Handshake => "handshaking",
+            Self::Identifying => "identifying",
+            Self::Resuming => "resuming",
         })
     }
 }
@@ -157,12 +239,24 @@ impl Display for ConnectionStage {
 /// [`client`]: crate::client
 /// [`gateway`]: crate::gateway
 /// [`voice`]: crate::model::voice
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum InterMessage {
     #[cfg(feature = "client")]
-    Client(Box<ShardClientMessage>),
-    Json(Value),
+    Client(ShardClientMessage),
+}
+
+impl InterMessage {
+    /// Constructs a custom message which will send the given `value` over the WebSocket.
+    ///
+    /// This is simply sugar for constructing and nesting [`ShardRunnerMessage::Message`].
+    #[cfg(feature = "client")]
+    #[must_use]
+    pub fn json(value: String) -> Self {
+        Self::Client(ShardClientMessage::Runner(Box::new(ShardRunnerMessage::Message(
+            tungstenite::Message::Text(value),
+        ))))
+    }
 }
 
 #[derive(Debug)]
@@ -181,4 +275,14 @@ pub enum ReconnectType {
     Reidentify,
     /// Indicator that a new connection should be made by sending a RESUME.
     Resume,
+}
+
+#[derive(Clone, Debug)]
+pub enum ChunkGuildFilter {
+    /// Returns all members of the guilds specified. Requires GUILD_MEMBERS intent.
+    None,
+    /// A common username prefix filter for the members returned.
+    Query(String),
+    /// A set of exact user IDs to query for.
+    UserIds(Vec<UserId>),
 }

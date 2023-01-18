@@ -3,7 +3,8 @@ name: CI
 on: [push, pull_request]
 
 env:
-  minrust: 1.48.0
+  rust_min: 1.66.0
+  rust_nightly: nightly-2022-12-15
 
 jobs:
   test:
@@ -16,36 +17,45 @@ jobs:
         name:
           - stable
           - beta
-          - nightly
-          - macOS
+          # The build matrix doesn't support the `env` variable in expressions
+          # see: jobs.nightly
+          # - nightly
           - Windows
+          - native-tls
+          - no default features
           - no cache
           - no gateway
+          - time
           - unstable Discord API features
-          - rustls tokio 0.2
-          - native-tls tokio 0.2
+          - simd-json
 
         include:
           - name: beta
             toolchain: beta
-          - name: nightly
-            toolchain: nightly
-          - name: macOS
-            os: macOS-latest
           - name: Windows
             os: windows-latest
+          - name: native-tls
+            features: default_native_tls
+          - name: no default features
+            features: " "
           - name: no cache
             features: builder client framework gateway model http standard_framework utils rustls_backend
+          - name: simd-json
+            features: default_no_backend rustls_backend simd-json
           - name: no gateway
             features: model http rustls_backend
+          - name: time
+            features: time
+          - name: chrono
+            features: chrono
           - name: unstable Discord API features
             features: default unstable_discord_api
             dont-test: true
-          - name: rustls tokio 0.2
-            features: default_tokio_0_2
+          - name: builder without model
+            features: builder
             dont-test: true
-          - name: native-tls tokio 0.2
-            features: default_native_tls_tokio_0_2
+          - name: unstable Discord API (no default features)
+            features: unstable_discord_api
             dont-test: true
 
     steps:
@@ -53,36 +63,24 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Install toolchain
-        id: tc
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.toolchain || 'stable' }}
-          profile: minimal
-          override: true
-
-      - name: Install dependencies
-        if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libopus-dev
+          rustup install --profile minimal ${{ matrix.toolchain || 'stable' }}
+          rustup override set ${{ matrix.toolchain || 'stable' }}
 
-      - name: Setup cache
-        if: runner.os != 'macOS'
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-test-${{ steps.tc.outputs.rustc_hash }}-${{ hashFiles('**/Cargo.toml') }}
+      - name: Add problem matchers
+        shell: bash
+        run: echo "::add-matcher::.github/matchers/rust.json"
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v1
 
       - name: Build all features
         if: matrix.features == ''
-        run: cargo build --all-features
+        run: cargo build --features full
 
       - name: Test all features
         if: matrix.features == ''
-        run: cargo test --all-features
+        run: cargo test --features full
 
       - name: Build some features
         if: matrix.features
@@ -92,40 +90,109 @@ jobs:
         if: ${{ !matrix.dont-test && matrix.features }}
         run: cargo test --no-default-features --features "${{ matrix.features }}"
 
-      - name: Check minimal versions
-        if: matrix.toolchain == 'nightly'
-        run: cargo clean; cargo update -Z minimal-versions; cargo check
-
-  MSRV:
+  nightly:
+    name: Test (nightly)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout sources
         uses: actions/checkout@v2
 
-      - name: Install toolchain (${{ env.minrust }})
-        id: tc
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.minrust }}
-          profile: minimal
-          override: true
-
-      - name: Install dependencies
+      - name: Install toolchain (${{ env.rust_nightly }})
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libopus-dev
+          rustup install --profile minimal ${{ env.rust_nightly }}
+          rustup override set ${{ env.rust_nightly }}
 
-      - name: Setup cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-msrv-${{ steps.tc.outputs.rustc_hash }}-${{ hashFiles('**/Cargo.toml') }}
+      - name: Add problem matchers
+        shell: bash
+        run: echo "::add-matcher::.github/matchers/rust.json"
 
-      - run: cargo check --all-features
+      - name: Cache
+        uses: Swatinem/rust-cache@v1
+
+      - name: Build all features
+        run: cargo build --features full
+
+      - name: Test all features
+        run: cargo test --features full
+
+  macOS:
+    name: Test (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v2
+
+      - name: Install toolchain
+        run: |
+          rustup install --profile minimal stable
+          rustup override set stable
+
+      - name: Add problem matchers
+        shell: bash
+        run: echo "::add-matcher::.github/matchers/rust.json"
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v1
+
+      - name: Remove cargo build config
+        run: rm .cargo/config.toml
+
+      - name: Build
+        run: cargo build
+
+      - name: Test
+        run: cargo test
+
+  MSRV:
+    runs-on: ubuntu-latest
+
+    # We only run this job on the current branch as keeping MSRV the same is not important on next.
+    if: (github.event_name == 'push' && github.ref_name == 'current') ||
+        (github.event_name == 'pull_request' && github.base_ref == 'current') 
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v2
+
+      - name: Install toolchain (${{ env.rust_min }})
+        run: |
+          rustup install --profile minimal ${{ env.rust_min }}
+          rustup override set ${{ env.rust_min }}
+
+      - name: Add problem matchers
+        run: echo "::add-matcher::.github/matchers/rust.json"
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v1
+
+      - name: Check
+        run: cargo check --features full
+
+  min_versions:
+    name: Check minimal versions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v2
+
+      - name: Install toolchain (${{ env.rust_nightly }})
+        run: |
+          rustup install --profile minimal ${{ env.rust_nightly }}
+          rustup override set ${{ env.rust_nightly }}
+
+      - name: Add problem matchers
+        run: echo "::add-matcher::.github/matchers/rust.json"
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v1
+
+      - name: Check minimal versions
+        run: |
+          cargo update -Z minimal-versions
+          cargo check
 
   doc:
     name: Build docs
@@ -135,30 +202,18 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v2
 
-      - name: Install toolchain
-        id: tc
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-          profile: minimal
-          override: true
-
-      - name: Install dependencies
+      - name: Install toolchain (${{ env.rust_nightly }})
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libopus-dev
+          rustup install --profile minimal ${{ env.rust_nightly }}
+          rustup override set ${{ env.rust_nightly }}
 
-      - name: Setup cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-docs-${{ steps.tc.outputs.rustc_hash }}-${{ hashFiles('**/Cargo.toml') }}
+      - name: Add problem matchers
+        run: echo "::add-matcher::.github/matchers/rust.json"
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v1
 
       - name: Build docs
-        env:
-          RUSTDOCFLAGS: -D broken_intra_doc_links
         run: |
           cargo doc --no-deps --features collector,voice,unstable_discord_api
           cargo doc --no-deps -p command_attr
@@ -172,52 +227,49 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Install toolchain
-        id: tc
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
+        run: rustup install stable
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libopus-dev
+      - name: Add problem matchers
+        run: echo "::add-matcher::.github/matchers/rust.json"
 
-      - name: Setup cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-examples-${{ steps.tc.outputs.rustc_hash }}-${{ hashFiles('**/Cargo.toml') }}
+      - name: Cache
+        uses: Swatinem/rust-cache@v1
 
-      - name: 'Build example 1'
-        run: cargo build -p e01_basic_ping_bot
-      - name: 'Build example 2'
-        run: cargo build -p e02_transparent_guild_sharding
-      - name: 'Build example 3'
-        run: cargo build -p e03_struct_utilities
-      - name: 'Build example 4'
-        run: cargo build -p e04_message_builder
-      - name: 'Build example 5'
-        run: cargo build -p e05_command_framework
-      - name: 'Build example 6'
-        run: cargo build -p e06_sample_bot_structure
-      - name: 'Build example 7'
-        run: cargo build -p e07_env_logging
-      - name: 'Build example 8'
-        run: cargo build -p e08_shard_manager
-      - name: 'Build example 9'
-        run: cargo build -p e09_create_message_builder
-      - name: 'Build example 10'
-        run: cargo build -p e10_collectors
-      - name: 'Build example 11'
-        run: cargo build -p e11_gateway_intents
-      - name: 'Build example 12'
-        run: cargo build -p e12_global_data
-      - name: 'Build example 13'
-        run: cargo build -p e13_parallel_loops
-      - name: 'Build example 14'
-        run: cargo build -p e14_slash_commands
+      - name: 'Check example 1'
+        run: cargo check -p e01_basic_ping_bot
+      - name: 'Check example 2'
+        run: cargo check -p e02_transparent_guild_sharding
+      - name: 'Check example 3'
+        run: cargo check -p e03_struct_utilities
+      - name: 'Check example 4'
+        run: cargo check -p e04_message_builder
+      - name: 'Check example 5'
+        run: cargo check -p e05_command_framework
+      - name: 'Check example 6'
+        run: cargo check -p e06_sample_bot_structure
+      - name: 'Check example 7'
+        run: cargo check -p e07_env_logging
+      - name: 'Check example 8'
+        run: cargo check -p e08_shard_manager
+      - name: 'Check example 9'
+        run: cargo check -p e09_create_message_builder
+      - name: 'Check example 10'
+        run: cargo check -p e10_collectors
+      - name: 'Check example 11'
+        run: cargo check -p e11_gateway_intents
+      - name: 'Check example 12'
+        run: cargo check -p e12_global_data
+      - name: 'Check example 13'
+        run: cargo check -p e13_parallel_loops
+      - name: 'Check example 14'
+        run: cargo check -p e14_slash_commands
+      - name: 'Check example 15'
+        run: cargo check -p e15_simple_dashboard
+      - name: 'Check example 16'
+        run: cargo check -p e16_sqlite_database
+      - name: 'Check example 17'
+        run: cargo check -p e17_message_components
+      - name: 'Check example 18'
+        run: cargo check -p e18_webhook
+      - name: 'Check example 19'
+        run: cargo check -p e19_interactions_endpoint

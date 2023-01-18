@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 
 use crate::client::Context;
+use crate::internal::tokio::spawn_named;
 use crate::model::channel::Message;
 
 type Check = for<'fut> fn(&'fut Context, &'fut Message) -> BoxFuture<'fut, bool>;
@@ -47,7 +49,7 @@ pub(crate) enum Bucket {
     /// The bucket will collect tickets per category.
     ///
     /// This requires the cache, as messages do not contain their channel's
-    /// category.
+    /// category and retrieving channel data via HTTP is costly.
     #[cfg(feature = "cache")]
     Category(TicketCounter),
 }
@@ -57,21 +59,21 @@ impl Bucket {
     pub async fn take(&mut self, ctx: &Context, msg: &Message) -> Option<RateLimitInfo> {
         match self {
             Self::Global(counter) => counter.take(ctx, msg, 0).await,
-            Self::User(counter) => counter.take(ctx, msg, msg.author.id.0).await,
+            Self::User(counter) => counter.take(ctx, msg, msg.author.id.get()).await,
             Self::Guild(counter) => {
                 if let Some(guild_id) = msg.guild_id {
-                    counter.take(ctx, msg, guild_id.0).await
+                    counter.take(ctx, msg, guild_id.get()).await
                 } else {
                     None
                 }
             },
-            Self::Channel(counter) => counter.take(ctx, msg, msg.channel_id.0).await,
+            Self::Channel(counter) => counter.take(ctx, msg, msg.channel_id.get()).await,
             // This requires the cache, as messages do not contain their channel's
             // category.
             #[cfg(feature = "cache")]
             Self::Category(counter) => {
                 if let Some(category_id) = msg.category_id(ctx).await {
-                    counter.take(ctx, msg, category_id.0).await
+                    counter.take(ctx, msg, category_id.get()).await
                 } else {
                     None
                 }
@@ -83,19 +85,19 @@ impl Bucket {
     pub async fn give(&mut self, ctx: &Context, msg: &Message) {
         match self {
             Self::Global(counter) => counter.give(ctx, msg, 0).await,
-            Self::User(counter) => counter.give(ctx, msg, msg.author.id.0).await,
+            Self::User(counter) => counter.give(ctx, msg, msg.author.id.get()).await,
             Self::Guild(counter) => {
                 if let Some(guild_id) = msg.guild_id {
-                    counter.give(ctx, msg, guild_id.0).await
+                    counter.give(ctx, msg, guild_id.get()).await;
                 }
             },
-            Self::Channel(counter) => counter.give(ctx, msg, msg.channel_id.0).await,
+            Self::Channel(counter) => counter.give(ctx, msg, msg.channel_id.get()).await,
             // This requires the cache, as messages do not contain their channel's
             // category.
             #[cfg(feature = "cache")]
             Self::Category(counter) => {
                 if let Some(category_id) = msg.category_id(ctx).await {
-                    counter.give(ctx, msg, category_id.0).await
+                    counter.give(ctx, msg, category_id.get()).await;
                 }
             },
         }
@@ -142,18 +144,21 @@ pub enum RateLimitAction {
 impl RateLimitInfo {
     /// Gets the duration of the rate limit in seconds.
     #[inline]
+    #[must_use]
     pub fn as_secs(&self) -> u64 {
         self.rate_limit.as_secs()
     }
 
     /// Gets the duration of the rate limit in milliseconds.
     #[inline]
+    #[must_use]
     pub fn as_millis(&self) -> u128 {
         self.rate_limit.as_millis()
     }
 
     /// Gets the duration of the rate limit in microseconds.
     #[inline]
+    #[must_use]
     pub fn as_micros(&self) -> u128 {
         self.rate_limit.as_micros()
     }
@@ -172,7 +177,7 @@ impl TicketCounter {
     /// the caller ends up doing, receiving some action eventually means
     /// no ticket can be taken and the duration must elapse.
     pub async fn take(&mut self, ctx: &Context, msg: &Message, id: u64) -> Option<RateLimitInfo> {
-        if let Some(ref check) = self.check {
+        if let Some(check) = &self.check {
             if !(check)(ctx, msg).await {
                 return None;
             }
@@ -205,7 +210,7 @@ impl TicketCounter {
                             let ctx = ctx.clone();
                             let msg = msg.clone();
 
-                            tokio::spawn(async move {
+                            spawn_named("buckets::delay_action", async move {
                                 delay_action(&ctx, &msg).await;
                             });
                         }
@@ -229,10 +234,9 @@ impl TicketCounter {
                         action,
                         is_first_try: was_first_try,
                     });
-                } else {
-                    ticket_owner.tickets = 0;
-                    ticket_owner.set_time = now;
                 }
+                ticket_owner.tickets = 0;
+                ticket_owner.set_time = now;
             }
         }
 
@@ -253,7 +257,7 @@ impl TicketCounter {
                     let ctx = ctx.clone();
                     let msg = msg.clone();
 
-                    tokio::spawn(async move {
+                    spawn_named("buckets::delay_action", async move {
                         delay_action(&ctx, &msg).await;
                     });
                 }
@@ -275,12 +279,11 @@ impl TicketCounter {
                 action,
                 is_first_try: was_first_try,
             });
-        } else {
-            ticket_owner.awaiting = ticket_owner.awaiting.saturating_sub(1);
-            ticket_owner.tickets += 1;
-            ticket_owner.is_first_try = true;
-            ticket_owner.last_time = Some(now);
         }
+        ticket_owner.awaiting = ticket_owner.awaiting.saturating_sub(1);
+        ticket_owner.tickets += 1;
+        ticket_owner.is_first_try = true;
+        ticket_owner.last_time = Some(now);
 
         None
     }
@@ -290,7 +293,7 @@ impl TicketCounter {
     /// Only call this if the mutable owner already took a ticket in this
     /// atomic execution of calling `take` and `give`.
     pub async fn give(&mut self, ctx: &Context, msg: &Message, id: u64) {
-        if let Some(ref check) = self.check {
+        if let Some(check) = &self.check {
             if !(check)(ctx, msg).await {
                 return;
             }
@@ -303,11 +306,11 @@ impl TicketCounter {
             }
 
             let delay = self.ratelimit.delay;
-            // Substract one step of time that would have to pass.
+            // Subtract one step of time that would have to pass.
             // This tries to bypass a problem of keeping track of when tickets
             // were taken.
             // When a ticket is taken, the bucket sets `last_time`, by
-            // substracting the delay, once a ticket is allowed to be
+            // subtracting the delay, once a ticket is allowed to be
             // taken.
             // If the value is set to `None` this could possibly reset the
             // bucket.
@@ -321,9 +324,9 @@ impl TicketCounter {
 #[derive(Debug)]
 pub struct RevertBucket;
 
-impl std::fmt::Display for RevertBucket {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RevertBucket")
+impl fmt::Display for RevertBucket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RevertBucket")
     }
 }
 
@@ -381,6 +384,7 @@ impl Default for BucketBuilder {
 
 impl BucketBuilder {
     /// A bucket collecting tickets per command invocation.
+    #[must_use]
     pub fn new_global() -> Self {
         Self {
             limited_for: LimitedFor::Global,
@@ -389,6 +393,7 @@ impl BucketBuilder {
     }
 
     /// A bucket collecting tickets per user.
+    #[must_use]
     pub fn new_user() -> Self {
         Self {
             limited_for: LimitedFor::User,
@@ -397,6 +402,7 @@ impl BucketBuilder {
     }
 
     /// A bucket collecting tickets per guild.
+    #[must_use]
     pub fn new_guild() -> Self {
         Self {
             limited_for: LimitedFor::Guild,
@@ -405,6 +411,7 @@ impl BucketBuilder {
     }
 
     /// A bucket collecting tickets per channel.
+    #[must_use]
     pub fn new_channel() -> Self {
         Self {
             limited_for: LimitedFor::Channel,
@@ -417,6 +424,7 @@ impl BucketBuilder {
     /// This requires the cache, as messages do not contain their channel's
     /// category.
     #[cfg(feature = "cache")]
+    #[must_use]
     pub fn new_category() -> Self {
         Self {
             limited_for: LimitedFor::Category,
@@ -461,10 +469,69 @@ impl BucketBuilder {
         self
     }
 
-    /// This function will be called once a user's invocation has been delayed.
+    /// This function is called when a user's command invocation is delayed when:
+    /// 1. `await_ratelimits` is set to a non zero value (the default is 0).
+    /// 2. user's message rests comfortably within `await_ratelimits` (ex. if you set it to 1 then it will only respond once when the delay is first exceeded).
+    ///
+    /// For convenience, this function will automatically raise `await_ratelimits` to at least 1.
+    ///
+    /// You can use this to, for example, send a custom response when someone exceeds the amount of commands they're allowed to make.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// use serenity::framework::standard::macros::{command, group};
+    /// use serenity::framework::standard::{CommandResult, StandardFramework};
+    /// use serenity::model::channel::Message;
+    /// use serenity::prelude::*;
+    ///
+    /// #[command]
+    /// #[bucket = "example_bucket"]
+    /// async fn example_command(ctx: &Context, msg: &Message) -> CommandResult {
+    ///     msg.reply(ctx, "Example message, You can only repeat this once every 10 seconds").await?;
+    ///
+    ///     Ok(())
+    /// }
+    ///
+    /// async fn example_overuse_response(ctx: &Context, msg: &Message) {
+    ///     msg.reply(ctx, "I told you that you can't call this command less than every 10 seconds!").await.unwrap();
+    /// }
+    ///
+    /// #[group]
+    /// #[commands(example_command)]
+    /// struct General;
+    ///
+    /// let token = std::env::var("DISCORD_TOKEN")?;
+    ///
+    /// let framework = StandardFramework::new()
+    ///     .bucket("example_bucket", |b| {
+    ///         // We initialise the bucket with the function we want to run
+    ///         b.delay_action(|ctx, msg| {
+    ///             Box::pin(example_overuse_response(ctx, msg))
+    ///         })
+    ///         .delay(10) // We set the delay to 10 seconds
+    ///         .await_ratelimits(1) // We override the default behavior so that the function actually gets run
+    ///     })
+    ///     .await
+    ///     .group(&GENERAL_GROUP);
+    ///
+    /// framework.configure(|c| c.prefix("~"));
+    ///
+    /// let mut client = Client::builder(&token, GatewayIntents::default())
+    /// .framework(framework)
+    /// .await?;
+    ///
+    /// client.start().await?;
+    /// #     Ok(())
+    /// # }
+    /// ```
     #[inline]
     pub fn delay_action(&mut self, action: DelayHook) -> &mut Self {
         self.delay_action = Some(action);
+        if self.await_ratelimits == 0 {
+            self.await_ratelimits = 1;
+        }
 
         self
     }

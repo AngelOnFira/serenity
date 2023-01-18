@@ -1,93 +1,169 @@
-use std::collections::HashMap;
+use super::{
+    CreateActionRow,
+    CreateAllowedMentions,
+    CreateAttachment,
+    CreateEmbed,
+    ExistingAttachment,
+};
+#[cfg(feature = "http")]
+use crate::constants;
+#[cfg(feature = "http")]
+use crate::http::Http;
+#[cfg(feature = "http")]
+use crate::internal::prelude::*;
+use crate::model::prelude::*;
+#[cfg(feature = "http")]
+use crate::utils::check_overflow;
 
-use serde_json::Value;
+#[derive(Clone, Debug, Default, Serialize)]
+#[must_use]
+pub struct EditInteractionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embeds: Option<Vec<CreateEmbed>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed_mentions: Option<CreateAllowedMentions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    components: Option<Vec<CreateActionRow>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attachments: Option<Vec<ExistingAttachment>>,
 
-use super::{CreateAllowedMentions, CreateEmbed};
-use crate::builder::CreateComponents;
-use crate::utils;
-
-#[derive(Clone, Debug, Default)]
-pub struct EditInteractionResponse(pub HashMap<&'static str, Value>);
+    #[serde(skip)]
+    files: Vec<CreateAttachment>,
+}
 
 impl EditInteractionResponse {
-    /// Sets the `InteractionApplicationCommandCallbackData` for the message.
+    /// Equivalent to [`Self::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Edits the initial interaction response. Does not work for ephemeral messages.
+    ///
+    /// The `application_id` used will usually be the bot's [`UserId`], except if the bot is very
+    /// old.
+    ///
+    /// **Note**: Message contents must be under 2000 unicode code points, and embeds must be under
+    /// 6000 code points.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::Model`] if the message content is too long. May also return an
+    /// [`Error::Http`] if the API returns an error, or an [`Error::Json`] if there is an error in
+    /// deserializing the API response.
+    #[cfg(feature = "http")]
+    pub async fn execute(mut self, http: impl AsRef<Http>, token: &str) -> Result<Message> {
+        self.check_length()?;
+        let files = std::mem::take(&mut self.files);
+        http.as_ref().edit_original_interaction_response(token, &self, files).await
+    }
+
+    #[cfg(feature = "http")]
+    fn check_length(&self) -> Result<()> {
+        if let Some(content) = &self.content {
+            check_overflow(content.chars().count(), constants::MESSAGE_CODE_LIMIT)
+                .map_err(|overflow| Error::Model(ModelError::MessageTooLong(overflow)))?;
+        }
+
+        if let Some(embeds) = &self.embeds {
+            check_overflow(embeds.len(), constants::EMBED_MAX_COUNT)
+                .map_err(|_| Error::Model(ModelError::EmbedAmount))?;
+            for embed in embeds {
+                embed.check_length()?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Sets the `InteractionCommandCallbackData` for the message.
 
     /// Set the content of the message.
     ///
     /// **Note**: Message contents must be under 2000 unicode code points.
     #[inline]
-    pub fn content<D: ToString>(&mut self, content: D) -> &mut Self {
-        self._content(content.to_string())
-    }
-
-    fn _content(&mut self, content: String) -> &mut Self {
-        self.0.insert("content", Value::String(content));
+    pub fn content(mut self, content: impl Into<String>) -> Self {
+        self.content = Some(content.into());
         self
     }
 
-    /// Creates an embed for the message.
-    pub fn create_embed<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut CreateEmbed) -> &mut CreateEmbed,
-    {
-        let mut embed = CreateEmbed::default();
-        f(&mut embed);
-        self.add_embed(embed)
+    /// Adds an embed for the message.
+    ///
+    /// Embeds from the original message are reset when adding new embeds and must be re-added.
+    pub fn add_embed(mut self, embed: CreateEmbed) -> Self {
+        self.embeds.get_or_insert(Vec::new()).push(embed);
+        self
     }
 
-    /// Adds an embed for the message.
-    pub fn add_embed(&mut self, embed: CreateEmbed) -> &mut Self {
-        let map = utils::hashmap_to_json_map(embed.0);
-        let embed = Value::Object(map);
+    /// Adds multiple embeds to the message.
+    ///
+    /// Embeds from the original message are reset when adding new embeds and must be re-added.
+    pub fn add_embeds(mut self, embeds: Vec<CreateEmbed>) -> Self {
+        self.embeds.get_or_insert(Vec::new()).extend(embeds);
+        self
+    }
 
-        let embeds = self.0.entry("embeds").or_insert_with(|| Value::Array(vec![]));
-
-        if let Some(embeds) = embeds.as_array_mut() {
-            embeds.push(embed);
-        }
-
+    /// Sets a single embed to include in the message
+    ///
+    /// Calling this will overwrite the embed list. To append embeds, call [`Self::add_embed`]
+    /// instead.
+    pub fn embed(mut self, embed: CreateEmbed) -> Self {
+        self.embeds = Some(vec![embed]);
         self
     }
 
     /// Sets the embeds for the message.
     ///
     /// **Note**: You can only have up to 10 embeds per message.
-    pub fn set_embeds(&mut self, embeds: Vec<CreateEmbed>) -> &mut Self {
-        if self.0.contains_key("embeds") {
-            self.0.remove_entry("embeds");
-        }
-
-        for embed in embeds {
-            self.add_embed(embed);
-        }
-
+    ///
+    /// Calling this will overwrite the embed list. To append embeds, call [`Self::add_embeds`]
+    /// instead.
+    pub fn embeds(mut self, embeds: Vec<CreateEmbed>) -> Self {
+        self.embeds = Some(embeds);
         self
     }
 
     /// Set the allowed mentions for the message.
-    pub fn allowed_mentions<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut CreateAllowedMentions) -> &mut CreateAllowedMentions,
-    {
-        let mut allowed_mentions = CreateAllowedMentions::default();
-        f(&mut allowed_mentions);
-        let map = utils::hashmap_to_json_map(allowed_mentions.0);
-        let allowed_mentions = Value::Object(map);
-
-        self.0.insert("allowed_mentions", allowed_mentions);
+    pub fn allowed_mentions(mut self, allowed_mentions: CreateAllowedMentions) -> Self {
+        self.allowed_mentions = Some(allowed_mentions);
         self
     }
 
     /// Sets the components of this message.
-    #[cfg(feature = "unstable_discord_api")]
-    pub fn components<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut CreateComponents) -> &mut CreateComponents,
-    {
-        let mut components = CreateComponents::default();
-        f(&mut components);
+    pub fn components(mut self, components: Vec<CreateActionRow>) -> Self {
+        self.components = Some(components);
+        self
+    }
+    super::button_and_select_menu_convenience_methods!();
 
-        self.0.insert("components", Value::Array(components.0));
+    /// Add a new attachment for the message.
+    ///
+    /// This can be called multiple times.
+    ///
+    /// If this is called one or more times, existing attachments will reset. To keep them, provide
+    /// their IDs to [`Self::keep_existing_attachment`].
+    pub fn new_attachment(mut self, attachment: CreateAttachment) -> Self {
+        self.files.push(attachment);
+        self
+    }
+
+    /// Keeps an existing attachment by id.
+    ///
+    /// To be used after [`Self::new_attachment`] or [`Self::clear_existing_attachments`].
+    pub fn keep_existing_attachment(mut self, id: AttachmentId) -> Self {
+        self.attachments.get_or_insert_with(Vec::new).push(ExistingAttachment {
+            id,
+        });
+        self
+    }
+
+    /// Clears existing attachments.
+    ///
+    /// In combination with [`Self::keep_existing_attachment`], this can be used to selectively
+    /// keep only some existing attachments.
+    pub fn clear_existing_attachments(mut self) -> Self {
+        self.attachments = Some(Vec::new());
         self
     }
 }

@@ -1,212 +1,111 @@
-use std::collections::HashMap;
+#[cfg(feature = "http")]
+use crate::http::Http;
+#[cfg(feature = "http")]
+use crate::internal::prelude::*;
+#[cfg(feature = "http")]
+use crate::model::application::CommandPermission;
+use crate::model::application::CommandPermissionType;
+use crate::model::id::CommandPermissionId;
+#[cfg(feature = "http")]
+use crate::model::id::{CommandId, GuildId};
 
-use serde_json::Value;
-
-use crate::model::interactions::application_command::ApplicationCommandPermissionType;
-use crate::utils;
-
-/// A builder for creating several [`ApplicationCommandPermission`].
+/// A builder for creating several [`CommandPermissionData`].
 ///
-/// [`ApplicationCommandPermission`]: crate::model::interactions::application_command::ApplicationCommandPermission
-/// [`kind`]: Self::kind
-#[derive(Clone, Debug, Default)]
-pub struct CreateApplicationCommandsPermissions(pub Vec<Value>);
-
-impl CreateApplicationCommandsPermissions {
-    /// Creates a new application command.
-    pub fn create_application_command<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(
-            &mut CreateApplicationCommandPermissions,
-        ) -> &mut CreateApplicationCommandPermissions,
-    {
-        let mut data = CreateApplicationCommandPermissions::default();
-        f(&mut data);
-
-        self.add_application_command(data);
-
-        self
-    }
-
-    /// Adds a new application command.
-    pub fn add_application_command(
-        &mut self,
-        application_command: CreateApplicationCommandPermissions,
-    ) -> &mut Self {
-        let new_data = Value::Object(utils::hashmap_to_json_map(application_command.0));
-
-        self.0.push(new_data);
-
-        self
-    }
-
-    /// Sets all the application commands.
-    pub fn set_application_commands(
-        &mut self,
-        application_commands: Vec<CreateApplicationCommandPermissions>,
-    ) -> &mut Self {
-        let new_application_commands = application_commands
-            .into_iter()
-            .map(|f| Value::Object(utils::hashmap_to_json_map(f.0)))
-            .collect::<Vec<Value>>();
-
-        for application_command in new_application_commands {
-            self.0.push(application_command);
-        }
-
-        self
-    }
+/// [`CommandPermissionData`]: crate::model::application::CommandPermissionData
+#[derive(Clone, Debug, Default, Serialize)]
+#[must_use]
+pub struct CreateCommandPermissionsData {
+    permissions: Vec<CreateCommandPermissionData>,
 }
-/// A builder for creating an [`ApplicationCommandPermission`].
-///
-/// [`ApplicationCommandPermission`]: crate::model::interactions::application_command::ApplicationCommandPermission
-/// [`kind`]: Self::kind
-#[derive(Clone, Debug, Default)]
-pub struct CreateApplicationCommandPermissions(pub HashMap<&'static str, Value>);
 
-impl CreateApplicationCommandPermissions {
-    /// The [`CommandId`] these permissions belong to.
+impl CreateCommandPermissionsData {
+    /// Equivalent to [`Self::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create permissions for a guild application command. These will overwrite any existing
+    /// permissions for that command.
     ///
-    /// [`CommandId`]: crate::model::id::CommandId
-    pub fn id(&mut self, application_command_id: u64) -> &mut Self {
-        self.0.insert("id", Value::String(application_command_id.to_string()));
-        self
-    }
-
-    /// Creates permissions for the application command.
-    pub fn create_permissions<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(
-            &mut CreateApplicationCommandPermissionData,
-        ) -> &mut CreateApplicationCommandPermissionData,
-    {
-        let mut data = CreateApplicationCommandPermissionData::default();
-        f(&mut data);
-
-        self.add_permissions(data);
-
-        self
-    }
-
-    /// Adds permission for the application command.
-    pub fn add_permissions(
-        &mut self,
-        permission: CreateApplicationCommandPermissionData,
-    ) -> &mut Self {
-        let new_data = utils::hashmap_to_json_map(permission.0);
-        let permissions = self.0.entry("permissions").or_insert_with(|| Value::Array(Vec::new()));
-
-        let permissions_array = permissions.as_array_mut().expect("Must be an array");
-
-        permissions_array.push(Value::Object(new_data));
-
-        self
-    }
-
-    /// Sets permissions for the application command.
-    pub fn set_permissions(
-        &mut self,
-        permissions: Vec<CreateApplicationCommandPermissionData>,
-    ) -> &mut Self {
-        let new_permissions = permissions
-            .into_iter()
-            .map(|f| Value::Object(utils::hashmap_to_json_map(f.0)))
-            .collect::<Vec<Value>>();
-
-        self.0.insert("permissions", Value::Array(new_permissions));
-
-        self
-    }
-}
-
-/// A builder for creating several [`ApplicationCommandPermissionData`].
-///
-/// [`ApplicationCommandPermissionData`]: crate::model::interactions::application_command::ApplicationCommandPermissionData
-/// [`kind`]: Self::kind
-#[derive(Clone, Debug, Default)]
-pub struct CreateApplicationCommandPermissionsData(pub HashMap<&'static str, Value>);
-
-impl CreateApplicationCommandPermissionsData {
-    /// Creates a permission for the application command.
-    pub fn create_permission<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(
-            &mut CreateApplicationCommandPermissionData,
-        ) -> &mut CreateApplicationCommandPermissionData,
-    {
-        let mut data = CreateApplicationCommandPermissionData::default();
-        f(&mut data);
-
-        self.add_permission(data);
-
-        self
+    /// **Note**: The permissions will update instantly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Http`] if invalid data is given. See [Discord's docs] for more details.
+    ///
+    /// May also return [`Error::Json`] if there is an error in deserializing the API response.
+    ///
+    /// [Discord's docs]: https://discord.com/developers/docs/interactions/slash-commands
+    #[cfg(feature = "http")]
+    pub async fn execute(
+        self,
+        http: impl AsRef<Http>,
+        guild_id: GuildId,
+        command_id: CommandId,
+    ) -> Result<CommandPermission> {
+        http.as_ref().edit_guild_application_command_permissions(guild_id, command_id, &self).await
     }
 
     /// Adds a permission for the application command.
-    pub fn add_permission(
-        &mut self,
-        permission: CreateApplicationCommandPermissionData,
-    ) -> &mut Self {
-        let new_data = utils::hashmap_to_json_map(permission.0);
-        let permissions = self.0.entry("permissions").or_insert_with(|| Value::Array(Vec::new()));
-
-        let permissions_array = permissions.as_array_mut().expect("Must be an array");
-
-        permissions_array.push(Value::Object(new_data));
-
+    pub fn add_permission(mut self, permission: CreateCommandPermissionData) -> Self {
+        self.permissions.push(permission);
         self
     }
 
     /// Sets permissions for the application command.
-    pub fn set_permissions(
-        &mut self,
-        permissions: Vec<CreateApplicationCommandPermissionData>,
-    ) -> &mut Self {
-        let new_permissions = permissions
-            .into_iter()
-            .map(|f| Value::Object(utils::hashmap_to_json_map(f.0)))
-            .collect::<Vec<Value>>();
-
-        self.0.insert("permissions", Value::Array(new_permissions));
-
+    pub fn set_permissions(mut self, permissions: Vec<CreateCommandPermissionData>) -> Self {
+        self.permissions = permissions;
         self
     }
 }
 
-/// A builder for creating an [`ApplicationCommandPermissionData`].
+/// A builder for creating an [`CommandPermissionData`].
 ///
 /// All fields are required.
 ///
-/// [`ApplicationCommandPermissionData`]: crate::model::interactions::ApplicationCommandPermissionData
-/// [`kind`]: Self::kind
-#[derive(Clone, Debug, Default)]
-pub struct CreateApplicationCommandPermissionData(pub HashMap<&'static str, Value>);
+/// [`CommandPermissionData`]: crate::model::application::CommandPermissionData
+#[derive(Clone, Debug, Default, Serialize)]
+#[must_use]
+pub struct CreateCommandPermissionData {
+    #[serde(rename = "type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<CommandPermissionType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<CommandPermissionId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permission: Option<bool>,
+}
 
-impl CreateApplicationCommandPermissionData {
-    /// Sets the `ApplicationCommandPermissionType` for the [`ApplicationCommandPermissionData`].
+impl CreateCommandPermissionData {
+    /// Equivalent to [`Self::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the `CommandPermissionType` for the [`CommandPermissionData`].
     ///
-    /// [`ApplicationCommandPermissionData`]: crate::model::interaction::ApplicationCommandPermissionData
-    pub fn kind(&mut self, kind: ApplicationCommandPermissionType) -> &mut Self {
-        self.0.insert("type", Value::Number(serde_json::Number::from(kind as u8)));
+    /// [`CommandPermissionData`]: crate::model::application::CommandPermissionData
+    pub fn kind(mut self, kind: CommandPermissionType) -> Self {
+        self.kind = Some(kind);
         self
     }
 
-    /// Sets the CommandPermissionId for the [`ApplicationCommandPermissionData`].
+    /// Sets the CommandPermissionId for the [`CommandPermissionData`].
     ///
-    /// [`ApplicationCommandPermissionData`]: crate::model::interaction::ApplicationCommandPermissionData
-    pub fn id(&mut self, id: u64) -> &mut Self {
-        self.0.insert("id", Value::String(id.to_string()));
+    /// [`CommandPermissionData`]: crate::model::application::CommandPermissionData
+    pub fn id(mut self, id: CommandPermissionId) -> Self {
+        self.id = Some(id);
         self
     }
 
-    /// Sets the permission for the [`ApplicationCommandPermissionData`].
+    /// Sets the permission for the [`CommandPermissionData`].
     ///
-    /// **Note**: Setting it to `false` will only grey the application command in the
-    /// list, it will not fully hide it to the user.
+    /// **Note**: Passing `false` will only grey-out the application command in the list, and will
+    /// not fully hide it from the user.
     ///
-    /// [`ApplicationCommandPermissionData`]: crate::model::interaction::ApplicationCommandPermissionData
-    pub fn permission(&mut self, permission: bool) -> &mut Self {
-        self.0.insert("permission", Value::Bool(permission));
+    /// [`CommandPermissionData`]: crate::model::application::CommandPermissionData
+    pub fn permission(mut self, permission: bool) -> Self {
+        self.permission = Some(permission);
         self
     }
 }

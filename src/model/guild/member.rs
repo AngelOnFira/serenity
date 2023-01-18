@@ -1,39 +1,34 @@
 #[cfg(feature = "model")]
 use std::borrow::Cow;
+#[cfg(feature = "cache")]
 use std::cmp::Reverse;
-use std::fmt::{Display, Formatter, Result as FmtResult};
-
-#[cfg(feature = "model")]
-use bitflags::__impl_bitflags;
-use chrono::{DateTime, Utc};
-use serde::{Serialize, Serializer};
+use std::fmt;
 
 #[cfg(feature = "model")]
 use crate::builder::EditMember;
-#[cfg(all(feature = "cache"))]
+#[cfg(feature = "cache")]
 use crate::cache::Cache;
 #[cfg(feature = "model")]
 use crate::http::{CacheHttp, Http};
 #[cfg(all(feature = "cache", feature = "model"))]
 use crate::internal::prelude::*;
-#[cfg(feature = "unstable_discord_api")]
 use crate::model::permissions::Permissions;
 use crate::model::prelude::*;
-#[cfg(feature = "model")]
-use crate::utils;
-#[cfg(all(feature = "cache", feature = "model", feature = "utils"))]
-use crate::utils::Colour;
+use crate::model::Timestamp;
 
 /// Information about a member of a guild.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/guild#guild-member-object).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct Member {
     /// Indicator of whether the member can hear in voice channels.
     pub deaf: bool,
     /// The unique Id of the guild that the member is a part of.
+    #[serde(default)]
     pub guild_id: GuildId,
     /// Timestamp representing the date when the member joined.
-    pub joined_at: Option<DateTime<Utc>>,
+    pub joined_at: Option<Timestamp>,
     /// Indicator of whether the member can speak in voice channels.
     pub mute: bool,
     /// The member's nickname, if present.
@@ -48,17 +43,58 @@ pub struct Member {
     #[serde(default)]
     pub pending: bool,
     /// Timestamp representing the date since the member is boosting the guild.
-    pub premium_since: Option<DateTime<Utc>>,
+    pub premium_since: Option<Timestamp>,
     /// The total permissions of the member in a channel, including overrides.
     ///
     /// This is only [`Some`] when returned in an [`Interaction`] object.
     ///
-    /// [`Interaction`]: crate::model::interactions::Interaction
-    #[cfg(feature = "unstable_discord_api")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_discord_api")))]
+    /// [`Interaction`]: crate::model::application::Interaction
     pub permissions: Option<Permissions>,
     /// The guild avatar hash
     pub avatar: Option<String>,
+    /// When the user's timeout will expire and the user will be able to communicate in the guild again.
+    ///
+    /// Will be None or a time in the past if the user is not timed out.
+    pub communication_disabled_until: Option<Timestamp>,
+}
+
+/// Helper for deserialization without a `GuildId` but then later updated to the correct `GuildId`.
+///
+/// The only difference to `Member` is `guild_id` is wrapped in `Option`.
+#[derive(Deserialize)]
+pub(crate) struct InterimMember {
+    pub deaf: bool,
+    pub guild_id: Option<GuildId>,
+    pub joined_at: Option<Timestamp>,
+    pub mute: bool,
+    pub nick: Option<String>,
+    pub roles: Vec<RoleId>,
+    pub user: User,
+    #[serde(default)]
+    pub pending: bool,
+    pub premium_since: Option<Timestamp>,
+    pub permissions: Option<Permissions>,
+    pub avatar: Option<String>,
+    pub communication_disabled_until: Option<Timestamp>,
+}
+
+impl From<InterimMember> for Member {
+    fn from(m: InterimMember) -> Self {
+        Self {
+            deaf: m.deaf,
+            guild_id: m.guild_id.expect("GuildID was not set on InterimMember"),
+            joined_at: m.joined_at,
+            mute: m.mute,
+            nick: m.nick,
+            roles: m.roles,
+            user: m.user,
+            pending: m.pending,
+            premium_since: m.premium_since,
+            permissions: m.permissions,
+            avatar: m.avatar,
+            communication_disabled_until: m.communication_disabled_until,
+        }
+    }
 }
 
 #[cfg(feature = "model")]
@@ -80,26 +116,11 @@ impl Member {
         http: impl AsRef<Http>,
         role_id: impl Into<RoleId>,
     ) -> Result<()> {
-        self._add_role(&http, role_id.into()).await
+        self.add_roles(http, &[role_id.into()]).await
     }
 
-    async fn _add_role(&mut self, http: impl AsRef<Http>, role_id: RoleId) -> Result<()> {
-        if self.roles.contains(&role_id) {
-            return Ok(());
-        }
-
-        match http.as_ref().add_member_role(self.guild_id.0, self.user.id.0, role_id.0).await {
-            Ok(()) => {
-                self.roles.push(role_id);
-
-                Ok(())
-            },
-            Err(why) => Err(why),
-        }
-    }
-
-    /// Adds one or multiple [`Role`]s to the member, editing
-    /// its roles in-place if the request was successful.
+    /// Adds one or multiple [`Role`]s to the member, editing its roles in-place if the request
+    /// was successful.
     ///
     /// **Note**: Requires the [Manage Roles] permission.
     ///
@@ -109,25 +130,12 @@ impl Member {
     /// or if a role with a given Id does not exist.
     ///
     /// [Manage Roles]: Permissions::MANAGE_ROLES
-    pub async fn add_roles(
-        &mut self,
-        http: impl AsRef<Http>,
-        role_ids: &[RoleId],
-    ) -> Result<Vec<RoleId>> {
-        self.roles.extend_from_slice(role_ids);
+    pub async fn add_roles(&mut self, http: impl AsRef<Http>, role_ids: &[RoleId]) -> Result<()> {
+        let mut target_roles = self.roles.clone();
+        target_roles.extend_from_slice(role_ids);
 
-        let mut builder = EditMember::default();
-        builder.roles(&self.roles);
-        let map = utils::hashmap_to_json_map(builder.0);
-
-        match http.as_ref().edit_member(self.guild_id.0, self.user.id.0, &map).await {
-            Ok(member) => Ok(member.roles),
-            Err(why) => {
-                self.roles.retain(|r| !role_ids.contains(r));
-
-                Err(why)
-            },
-        }
+        let builder = EditMember::new().roles(target_roles);
+        self.edit(http, builder).await
     }
 
     /// Ban a [`User`] from the guild, deleting a number of
@@ -144,7 +152,7 @@ impl Member {
     /// [Ban Members]: Permissions::BAN_MEMBERS
     #[inline]
     pub async fn ban(&self, http: impl AsRef<Http>, dmd: u8) -> Result<()> {
-        self.ban_with_reason(&http, dmd, "").await
+        self.ban_with_reason(http, dmd, "").await
     }
 
     /// Ban the member from the guild with a reason. Refer to [`Self::ban`] to further documentation.
@@ -165,13 +173,13 @@ impl Member {
 
     /// Determines the member's colour.
     #[cfg(feature = "cache")]
-    pub async fn colour(&self, cache: impl AsRef<Cache>) -> Option<Colour> {
-        let guild_roles = cache.as_ref().guild_field(self.guild_id, |g| g.roles.clone()).await?;
+    pub fn colour(&self, cache: impl AsRef<Cache>) -> Option<Colour> {
+        let guild = cache.as_ref().guild(self.guild_id)?;
 
         let mut roles = self
             .roles
             .iter()
-            .filter_map(|role_id| guild_roles.get(role_id))
+            .filter_map(|role_id| guild.roles.get(role_id))
             .collect::<Vec<&Role>>();
 
         roles.sort_by_key(|&b| Reverse(b));
@@ -185,18 +193,48 @@ impl Member {
     /// (This returns the first channel that can be read by the member, if there isn't
     /// one returns [`None`])
     #[cfg(feature = "cache")]
-    pub async fn default_channel(&self, cache: impl AsRef<Cache>) -> Option<GuildChannel> {
-        let guild = self.guild_id.to_guild_cached(cache).await?;
+    pub fn default_channel(&self, cache: impl AsRef<Cache>) -> Option<GuildChannel> {
+        let guild = self.guild_id.to_guild_cached(&cache)?;
 
         let member = guild.members.get(&self.user.id)?;
 
         for channel in guild.channels.values() {
-            if guild.user_permissions_in(channel, member).ok()?.read_messages() {
+            if channel.kind != ChannelType::Category
+                && guild.user_permissions_in(channel, member).ok()?.view_channel()
+            {
                 return Some(channel.clone());
             }
         }
 
         None
+    }
+
+    /// Times the user out until `time`.
+    ///
+    /// Requires the [Moderate Members] permission.
+    ///
+    /// **Note**: [Moderate Members]: crate::model::permission::Permissions::MODERATE_MEMBERS
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Http`] if the current user lacks permission or if `time` is greater than
+    /// 28 days from the current time.
+    ///
+    /// [Moderate Members]: Permissions::MODERATE_MEMBERS
+    #[doc(alias = "timeout")]
+    pub async fn disable_communication_until_datetime(
+        &mut self,
+        http: impl AsRef<Http>,
+        time: Timestamp,
+    ) -> Result<()> {
+        let builder = EditMember::new().disable_communication_until_datetime(time);
+        match self.guild_id.edit_member(http, self.user.id, builder).await {
+            Ok(_) => {
+                self.communication_disabled_until = Some(time);
+                Ok(())
+            },
+            Err(why) => Err(why),
+        }
     }
 
     /// Calculates the member's display name.
@@ -209,30 +247,42 @@ impl Member {
 
     /// Returns the DiscordTag of a Member, taking possible nickname into account.
     #[inline]
+    #[must_use]
     pub fn distinct(&self) -> String {
         format!("{}#{:04}", self.display_name(), self.user.discriminator)
     }
 
-    /// Edits the member with the given data. See [`Guild::edit_member`] for
-    /// more information.
+    /// Edits the member in place with the given data.
     ///
-    /// See [`EditMember`] for the permission(s) required for separate builder
-    /// methods, as well as usage of this.
+    /// See [`EditMember`] for the permission(s) required for separate builder methods, as well as
+    /// usage of this.
+    ///
+    /// # Examples
+    ///
+    /// See [`GuildId::edit_member`] for details.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Http`] if the current user lacks necessary permissions.
-    ///
-    /// [`EditMember`]: crate::builder::EditMember
-    pub async fn edit<F>(&self, http: impl AsRef<Http>, f: F) -> Result<Member>
-    where
-        F: FnOnce(&mut EditMember) -> &mut EditMember,
-    {
-        let mut edit_member = EditMember::default();
-        f(&mut edit_member);
-        let map = utils::hashmap_to_json_map(edit_member.0);
+    pub async fn edit(&mut self, http: impl AsRef<Http>, builder: EditMember<'_>) -> Result<()> {
+        *self = self.guild_id.edit_member(http, self.user.id, builder).await?;
+        Ok(())
+    }
 
-        http.as_ref().edit_member(self.guild_id.0, self.user.id.0, &map).await
+    /// Allow a user to communicate, removing their timeout, if there is one.
+    ///
+    /// **Note**: Requires the [Moderate Members] permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Http`] if the current user lacks permission.
+    ///
+    /// [Moderate Members]: Permissions::MODERATE_MEMBERS
+    #[doc(alias = "timeout")]
+    pub async fn enable_communication(&mut self, http: impl AsRef<Http>) -> Result<()> {
+        let builder = EditMember::new().enable_communication();
+        *self = self.guild_id.edit_member(http, self.user.id, builder).await?;
+        Ok(())
     }
 
     /// Retrieves the ID and position of the member's highest role in the
@@ -248,13 +298,13 @@ impl Member {
     /// position. If two or more roles have the same highest position, then the
     /// role with the lowest ID is the highest.
     #[cfg(feature = "cache")]
-    pub async fn highest_role_info(&self, cache: impl AsRef<Cache>) -> Option<(RoleId, i64)> {
-        let guild_roles = cache.as_ref().guild_field(self.guild_id, |g| g.roles.clone()).await?;
+    pub fn highest_role_info(&self, cache: impl AsRef<Cache>) -> Option<(RoleId, u32)> {
+        let guild = cache.as_ref().guild(self.guild_id)?;
 
         let mut highest = None;
 
         for role_id in &self.roles {
-            if let Some(role) = guild_roles.get(role_id) {
+            if let Some(role) = guild.roles.get(role_id) {
                 // Skip this role if this role in iteration has:
                 //
                 // - a position less than the recorded highest
@@ -341,14 +391,15 @@ impl Member {
         #[cfg(feature = "cache")]
         {
             if let Some(cache) = cache_http.cache() {
-                if let Some(guild) = cache.guilds.read().await.get(&self.guild_id) {
+                let lookup = cache.guild(self.guild_id).as_deref().cloned();
+                if let Some(guild) = lookup {
                     let req = Permissions::KICK_MEMBERS;
 
                     if !guild.has_perms(&cache_http, req).await {
                         return Err(Error::Model(ModelError::InvalidPermissions(req)));
                     }
 
-                    guild.check_hierarchy(cache, self.user.id).await?;
+                    guild.check_hierarchy(cache, self.user.id)?;
                 }
             }
         }
@@ -395,7 +446,7 @@ impl Member {
     /// ```rust,ignore
     /// // assuming there's a `member` variable gotten from anything.
     /// println!("The permission bits for the member are: {}",
-    /// member.permissions().expect("permissions").bits);
+    /// member.permissions(&cache).expect("permissions").bits());
     /// ```
     ///
     /// # Errors
@@ -406,17 +457,9 @@ impl Member {
     /// And/or returns [`ModelError::ItemMissing`] if the "default channel" of the guild is not
     /// found.
     #[cfg(feature = "cache")]
-    pub async fn permissions(
-        &self,
-        cache_http: impl CacheHttp + AsRef<Cache>,
-    ) -> Result<Permissions> {
-        let perms_opt = cache_http
-            .as_ref()
-            .guild_field(self.guild_id, |guild| guild._member_permission_from_member(self))
-            .await;
-
-        match perms_opt {
-            Some(perms) => Ok(perms),
+    pub fn permissions(&self, cache: impl AsRef<Cache>) -> Result<Permissions> {
+        match cache.as_ref().guild(self.guild_id) {
+            Some(guild) => Ok(guild._member_permission_from_member(self)),
             None => Err(From::from(ModelError::GuildNotFound)),
         }
     }
@@ -437,24 +480,11 @@ impl Member {
         http: impl AsRef<Http>,
         role_id: impl Into<RoleId>,
     ) -> Result<()> {
-        let role_id = role_id.into();
-
-        if !self.roles.contains(&role_id) {
-            return Ok(());
-        }
-
-        match http.as_ref().remove_member_role(self.guild_id.0, self.user.id.0, role_id.0).await {
-            Ok(()) => {
-                self.roles.retain(|r| r.0 != role_id.0);
-
-                Ok(())
-            },
-            Err(why) => Err(why),
-        }
+        self.remove_roles(http, &[role_id.into()]).await
     }
 
-    /// Removes one or multiple [`Role`]s from the member. Returns the member's
-    /// new roles.
+    /// Removes one or multiple [`Role`]s from the member, editing its roles in-place if the
+    /// request was successful.
     ///
     /// **Note**: Requires the [Manage Roles] permission.
     ///
@@ -468,21 +498,12 @@ impl Member {
         &mut self,
         http: impl AsRef<Http>,
         role_ids: &[RoleId],
-    ) -> Result<Vec<RoleId>> {
-        self.roles.retain(|r| !role_ids.contains(r));
+    ) -> Result<()> {
+        let mut target_roles = self.roles.clone();
+        target_roles.retain(|r| !role_ids.contains(r));
 
-        let mut builder = EditMember::default();
-        builder.roles(&self.roles);
-        let map = utils::hashmap_to_json_map(builder.0);
-
-        match http.as_ref().edit_member(self.guild_id.0, self.user.id.0, &map).await {
-            Ok(member) => Ok(member.roles),
-            Err(why) => {
-                self.roles.extend_from_slice(role_ids);
-
-                Err(why)
-            },
-        }
+        let builder = EditMember::new().roles(target_roles);
+        self.edit(http, builder).await
     }
 
     /// Retrieves the full role data for the user's roles.
@@ -491,15 +512,15 @@ impl Member {
     ///
     /// If role data can not be found for the member, then [`None`] is returned.
     #[cfg(feature = "cache")]
-    pub async fn roles(&self, cache: impl AsRef<Cache>) -> Option<Vec<Role>> {
+    pub fn roles(&self, cache: impl AsRef<Cache>) -> Option<Vec<Role>> {
         Some(
             cache
                 .as_ref()
-                .guild_field(self.guild_id, |g| g.roles.clone())
-                .await?
-                .into_iter()
-                .map(|(_, v)| v)
-                .filter(|role| self.roles.contains(&role.id))
+                .guild(self.guild_id)?
+                .roles
+                .iter()
+                .filter(|(id, _)| self.roles.contains(id))
+                .map(|(_, role)| role.clone())
                 .collect(),
         )
     }
@@ -516,13 +537,14 @@ impl Member {
     /// [Ban Members]: Permissions::BAN_MEMBERS
     #[inline]
     pub async fn unban(&self, http: impl AsRef<Http>) -> Result<()> {
-        http.as_ref().remove_ban(self.guild_id.0, self.user.id.0).await
+        http.as_ref().remove_ban(self.guild_id, self.user.id, None).await
     }
 
     /// Returns the formatted URL of the member's per guild avatar, if one exists.
     ///
     /// This will produce a WEBP image URL, or GIF if the member has a GIF avatar.
     #[inline]
+    #[must_use]
     pub fn avatar_url(&self) -> Option<String> {
         avatar_url(self.guild_id, self.user.id, self.avatar.as_ref())
     }
@@ -533,12 +555,13 @@ impl Member {
     /// This will call [`Self::avatar_url`] first, and if that returns [`None`],
     /// it then falls back to [`User::face()`].
     #[inline]
+    #[must_use]
     pub fn face(&self) -> String {
         self.avatar_url().unwrap_or_else(|| self.user.face())
     }
 }
 
-impl Display for Member {
+impl fmt::Display for Member {
     /// Mentions the user so that they receive a notification.
     ///
     /// # Examples
@@ -549,14 +572,16 @@ impl Display for Member {
     /// ```
     ///
     /// This is in the format of `<@USER_ID>`.
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        Display::fmt(&self.user.mention(), f)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.user.mention(), f)
     }
 }
 
 /// A partial amount of data for a member.
 ///
 /// This is used in [`Message`]s from [`Guild`]s.
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/guild#guild-member-object), subset specification unknown
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct PartialMember {
@@ -564,7 +589,7 @@ pub struct PartialMember {
     #[serde(default)]
     pub deaf: bool,
     /// Timestamp representing the date when the member joined.
-    pub joined_at: Option<DateTime<Utc>>,
+    pub joined_at: Option<Timestamp>,
     /// Indicator of whether the member can speak in voice channels
     #[serde(default)]
     pub mute: bool,
@@ -578,7 +603,7 @@ pub struct PartialMember {
     #[serde(default)]
     pub pending: bool,
     /// Timestamp representing the date since the member is boosting the guild.
-    pub premium_since: Option<DateTime<Utc>>,
+    pub premium_since: Option<Timestamp>,
     /// The unique Id of the guild that the member is a part of.
     pub guild_id: Option<GuildId>,
     /// Attached User struct.
@@ -587,9 +612,7 @@ pub struct PartialMember {
     ///
     /// This is only [`Some`] when returned in an [`Interaction`] object.
     ///
-    /// [`Interaction`]: crate::model::interactions::Interaction
-    #[cfg(feature = "unstable_discord_api")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_discord_api")))]
+    /// [`Interaction`]: crate::model::application::Interaction
     pub permissions: Option<Permissions>,
 }
 
@@ -602,6 +625,7 @@ fn avatar_url(guild_id: GuildId, user_id: UserId, hash: Option<&String>) -> Opti
     })
 }
 
+/// [Discord docs](https://discord.com/developers/docs/resources/channel#thread-member-object).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct ThreadMember {
@@ -610,38 +634,18 @@ pub struct ThreadMember {
     /// The id of the user.
     pub user_id: Option<UserId>,
     /// The time the current user last joined the thread.
-    pub join_timestamp: DateTime<Utc>,
+    pub join_timestamp: Timestamp,
     /// Any user-thread settings, currently only used for notifications
     pub flags: ThreadMemberFlags,
 }
 
-/// Describes extra features of the message.
-#[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash)]
-pub struct ThreadMemberFlags {
-    pub bits: u64,
-}
-
-__impl_bitflags! {
-    ThreadMemberFlags: u64 {
+bitflags! {
+    /// Describes extra features of the message.
+    ///
+    /// Discord docs: flags field on [Thread Member](https://discord.com/developers/docs/resources/channel#thread-member-object).
+    #[derive(Default)]
+    pub struct ThreadMemberFlags: u64 {
         // Not documented.
-        NOTIFICATIONS = 0b0000_0000_0000_0000_0000_0000_0000_0001;
-    }
-}
-
-impl<'de> Deserialize<'de> for ThreadMemberFlags {
-    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(ThreadMemberFlags::from_bits_truncate(deserializer.deserialize_u64(U64Visitor)?))
-    }
-}
-
-impl Serialize for ThreadMemberFlags {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_u64(self.bits())
+        const NOTIFICATIONS = 1 << 0;
     }
 }

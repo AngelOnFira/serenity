@@ -1,11 +1,10 @@
 use std::env;
 
-use serenity::{
-    async_trait,
-    model::{channel::Message, gateway::Ready},
-    prelude::*,
-    utils::MessageBuilder,
-};
+use serenity::async_trait;
+use serenity::model::channel::Message;
+use serenity::model::gateway::Ready;
+use serenity::prelude::*;
+use serenity::utils::MessageBuilder;
 
 struct Handler;
 
@@ -16,7 +15,7 @@ impl EventHandler for Handler {
             let channel = match msg.channel_id.to_channel(&context).await {
                 Ok(channel) => channel,
                 Err(why) => {
-                    println!("Error getting channel: {:?}", why);
+                    println!("Error getting channel: {why:?}");
 
                     return;
                 },
@@ -35,7 +34,7 @@ impl EventHandler for Handler {
                 .build();
 
             if let Err(why) = msg.channel_id.say(&context.http, &response).await {
-                println!("Error sending message: {:?}", why);
+                println!("Error sending message: {why:?}");
             }
         }
     }
@@ -49,10 +48,13 @@ impl EventHandler for Handler {
 async fn main() {
     // Configure the client with your Discord bot token in the environment.
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
+    let intents = GatewayIntents::GUILD_MESSAGES
+        | GatewayIntents::DIRECT_MESSAGES
+        | GatewayIntents::MESSAGE_CONTENT;
     let mut client =
-        Client::builder(&token).event_handler(Handler).await.expect("Err creating client");
+        Client::builder(&token, intents).event_handler(Handler).await.expect("Err creating client");
 
     if let Err(why) = client.start().await {
-        println!("Client error: {:?}", why);
+        println!("Client error: {why:?}");
     }
 }

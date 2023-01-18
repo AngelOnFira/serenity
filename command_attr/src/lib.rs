@@ -1,19 +1,12 @@
 #![deny(rust_2018_idioms)]
-#![deny(broken_intra_doc_links)]
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn::{
-    parse::{Error, Parse, ParseStream, Result},
-    parse_macro_input,
-    parse_quote,
-    punctuated::Punctuated,
-    spanned::Spanned,
-    Ident,
-    Lit,
-    Token,
-};
+use syn::parse::{Error, Parse, ParseStream, Result};
+use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
+use syn::{parse_macro_input, parse_quote, Ident, Lit, Token};
 
 pub(crate) mod attributes;
 pub(crate) mod consts;
@@ -64,18 +57,18 @@ macro_rules! match_options {
 /// | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 /// | `#[checks(identifiers)]`                                                     | Preconditions that must met before the command's execution.                                              | `identifiers` is a comma separated list of identifiers referencing functions marked by the `#[check]` macro                                                                                                                      |
 /// | `#[aliases(names)]`                                                          | Alternative names to refer to this command.                                                              | `names` is a comma separated list of desired aliases.                                                                                                                                                                             |
-/// | `#[description(desc)]` </br> `#[description = desc]`                         | The command's description or summary.                                                                    | `desc` is a string describing the command.                                                                                                                                                                                       |
-/// | `#[usage(use)]` </br> `#[usage = use]`                                       | The command's intended usage.                                                                            | `use` is a string stating the schema for the command's usage.                                                                                                                                                                    |
-/// | `#[example(ex)]` </br> `#[example = ex]`                                     | An example of the command's usage. May be called multiple times to add many examples at once.            | `ex` is a string                                                                                                                                                                                                                 |
+/// | `#[description(desc)]` <br /> `#[description = desc]`                         | The command's description or summary.                                                                    | `desc` is a string describing the command.                                                                                                                                                                                       |
+/// | `#[usage(use)]` <br /> `#[usage = use]`                                       | The command's intended usage.                                                                            | `use` is a string stating the schema for the command's usage.                                                                                                                                                                    |
+/// | `#[example(ex)]` <br /> `#[example = ex]`                                     | An example of the command's usage. May be called multiple times to add many examples at once.            | `ex` is a string                                                                                                                                                                                                                 |
 /// | `#[delimiters(delims)]`                                                      | Argument delimiters specific to this command. Overrides the global list of delimiters in the framework.  | `delims` is a comma separated list of strings |
-/// | `#[min_args(min)]` </br> `#[max_args(max)]` </br> `#[num_args(min_and_max)]` | The expected length of arguments that the command must receive in order to function correctly.           | `min`, `max` and `min_and_max` are 16-bit, unsigned integers.                                                                                                                                                                    |
-/// | `#[required_permissions(perms)]`                                             | Set of permissions the user must possess.                                                                | `perms` is a comma separated list of permission names.</br> These can be found at [Discord's official documentation](https://discord.com/developers/docs/topics/permissions).                                                 |
+/// | `#[min_args(min)]` <br /> `#[max_args(max)]` <br /> `#[num_args(min_and_max)]` | The expected length of arguments that the command must receive in order to function correctly.           | `min`, `max` and `min_and_max` are 16-bit, unsigned integers.                                                                                                                                                                    |
+/// | `#[required_permissions(perms)]`                                             | Set of permissions the user must possess. <br /> In order for this attribute to work, "Presence Intent" and "Server Member Intent" options in bot application must be enabled and all intent flags must be enabled during client creation. | `perms` is a comma separated list of permission names.<br /> These can be found at [Discord's official documentation](https://discord.com/developers/docs/topics/permissions).        |
 /// | `#[allowed_roles(roles)]`                                                    | Set of roles the user must possess.                                                                      | `roles` is a comma separated list of role names.                                                                                                                                                                                 |
-/// | `#[help_available]` </br> `#[help_available(b)]`                             | If the command should be displayed in the help message.                                                  | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                                                                  |
+/// | `#[help_available]` <br /> `#[help_available(b)]`                             | If the command should be displayed in the help message.                                                  | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                                                                  |
 /// | `#[only_in(ctx)]`                                                            | Which environment the command can be executed in.                                                        | `ctx` is a string with the accepted values `guild`/`guilds` and `dm`/`dms` (Direct Message).                                                                                                                                     |
-/// | `#[bucket(name)]` </br> `#[bucket = name]`                                   | What bucket will impact this command.                                                                    | `name` is a string containing the bucket's name.</br> Refer to [the bucket example in the standard framework](https://docs.rs/serenity/*/serenity/framework/standard/struct.StandardFramework.html#method.bucket) for its usage. |
-/// | `#[owners_only]` </br> `#[owners_only(b)]`                                   | If this command is exclusive to owners.                                                                  | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                                                                  |
-/// | `#[owner_privilege]` </br> `#[owner_privilege(b)]`                           | If owners can bypass certain options.                                                                    | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                                                                  |
+/// | `#[bucket(name)]` <br /> `#[bucket = name]`                                   | What bucket will impact this command.                                                                    | `name` is a string containing the bucket's name.<br /> Refer to [the bucket example in the standard framework](https://docs.rs/serenity/*/serenity/framework/standard/struct.StandardFramework.html#method.bucket) for its usage. |
+/// | `#[owners_only]` <br /> `#[owners_only(b)]`                                   | If this command is exclusive to owners.                                                                  | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                                                                  |
+/// | `#[owner_privilege]` <br /> `#[owner_privilege(b)]`                           | If owners can bypass certain options.                                                                    | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                                                                  |
 /// | `#[sub_commands(commands)]`                                                  | The sub or children commands of this command. They are executed in the form: `this-command sub-command`. | `commands` is a comma separated list of identifiers referencing functions marked by the `#[command]` macro.                                                                                                                      |
 ///
 /// Documentation comments (`///`) applied onto the function are interpreted as sugar for the
@@ -101,10 +94,10 @@ macro_rules! match_options {
 pub fn command(attr: TokenStream, input: TokenStream) -> TokenStream {
     let mut fun = parse_macro_input!(input as CommandFun);
 
-    let _name = if !attr.is_empty() {
-        parse_macro_input!(attr as Lit).to_str()
+    let _name = if attr.is_empty() {
+        fun.name.to_string_non_raw()
     } else {
-        fun.name.to_string()
+        parse_macro_input!(attr as Lit).to_str()
     };
 
     let mut options = Options::new();
@@ -173,7 +166,7 @@ pub fn command(attr: TokenStream, input: TokenStream) -> TokenStream {
     propagate_err!(create_declaration_validations(&mut fun, DeclarFor::Command));
 
     let res = parse_quote!(serenity::framework::standard::CommandResult);
-    create_return_type_validation(&mut fun, res);
+    create_return_type_validation(&mut fun, &res);
 
     let visibility = fun.visibility;
     let name = fun.name.clone();
@@ -223,14 +216,12 @@ pub fn command(attr: TokenStream, input: TokenStream) -> TokenStream {
 
         #(#cooked)*
         #[allow(missing_docs)]
-        #visibility fn #name<'fut> (#(#args),*) -> ::serenity::futures::future::BoxFuture<'fut, #ret> {
-            use ::serenity::futures::future::FutureExt;
-
-            async move {
+        #visibility fn #name<'fut> (#(#args),*) -> std::pin::Pin<Box<dyn std::future::Future<Output = #ret> + Send + 'fut>> {
+            Box::pin(async move {
                 let _output: #ret = { #(#body)* };
                 #[allow(unreachable_code)]
                 _output
-            }.boxed()
+            })
         }
     })
     .into()
@@ -246,41 +237,43 @@ pub fn command(attr: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// | Syntax                                                                                                                                        | Description                                                                                                                                                                                                                                      | Argument explanation                                                                                       |
 /// |-----------------------------------------------------------------------------------------------------------------------------------------------| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
-/// | `#[suggestion_text(s)]` </br> `#[suggestion_text = s]`                                                                                        | When suggesting a command's name                                                                                                                                                                                                                 | `s` is a string                                                                                            |
-/// | `#[no_help_available_text(s)]` </br> `#[no_help_available_text = s]`                                                                          | When help is unavailable for a command.                                                                                                                                                                                                          | `s` is a string                                                                                            |
-/// | `#[usage_label(s)]` </br> `#[usage_label = s]`                                                                                                | How should the command be used.                                                                                                                                                                                                                  | `s` is a string                                                                                            |
-/// | `#[usage_sample_label(s)]` </br> `#[usage_sample_label = s]`                                                                                  | Actual sample label.                                                                                                                                                                                                                             | `s` is a string                                                                                            |
-/// | `#[ungrouped_label(s)]` </br> `#[ungrouped_label = s]`                                                                                        | Ungrouped commands label.                                                                                                                                                                                                                        | `s` is a string                                                                                            |
-/// | `#[grouped_label(s)]` </br> `#[grouped_label = s]`                                                                                            | Grouped commands label.                                                                                                                                                                                                                          | `s` is a string                                                                                            |
-/// | `#[sub_commands_label(s)]` </br> `#[sub_commands_label = s]`                                                                                  | Sub commands label.                                                                                                          | `s` is a string
-/// | `#[description_label(s)]` </br> `#[description_label = s]`                                                                                    | Label at the start of the description.                                                                                                                                                                                                           | `s` is a string                                                                                            |
-/// | `#[aliases_label(s)]` </br> `#[aliases_label= s]`                                                                                             | Label for a command's aliases.                                                                                                                                                                                                                   | `s` is a string                                                                                            |
-/// | `#[guild_only_text(s)]` </br> `#[guild_only_text = s]`                                                                                        | When a command is specific to guilds only.                                                                                                                                                                                                       | `s` is a string                                                                                            |
-/// | `#[checks_label(s)]` </br> `#[checks_label = s]`                                                                                              | The header text when showing checks in the help command.                                                                                                                                                                                         | `s` is a string                                                                                            |
-/// | `#[dm_only_text(s)]` </br> `#[dm_only_text = s]`                                                                                              | When a command is specific to dms only.                                                                                                                                                                                                          | `s` is a string                                                                                            |
-/// | `#[dm_and_guild_text(s)]` </br> `#[dm_and_guild_text = s]`                                                                                    | When a command is usable in both guilds and dms.                                                                                                                                                                                                 | `s` is a string                                                                                            |
-/// | `#[available_text(s)]` </br> `#[available_text = s]`                                                                                          | When a command is available.                                                                                                                                                                                                                     | `s` is a string                                                                                            |
-/// | `#[command_not_found_text(s)]` </br> `#[command_not_found_text = s]`                                                                          | When a command wasn't found.                                                                                                                                                                                                                     | `s` is a string                                                                                            |
-/// | `#[individual_command_tip(s)]` </br> `#[individual_command_tip = s]`                                                                          | How the user should access a command's details.                                                                                                                                                                                                  | `s` is a string                                                                                            |
-/// | `#[strikethrough_commands_tip_in_dm(s)]` </br>  `#[strikethrough_commands_tip_in_dm = s]`                                                     | Reasoning behind strikethrough-commands.</br> *Only used in dms.*                                                                                                                                                                                | `s` is a string. If not provided, default text will be used instead.                                       |
-/// | `#[strikethrough_commands_tip_in_guild(s)]` </br> `#[strikethrough_commands_tip_in_guild = s]`                                                | Reasoning behind strikethrough-commands.</br> *Only used in guilds.*                                                                                                                                                                             | `s` is a string. If not provided, default text will be used instead.                                       |
-/// | `#[group_prefix(s)]` </br> `#[group_prefix = s]`                                                                                              | For introducing a group's prefix                                                                                                                                                                                                                 | `s` is a string                                                                                            |
-/// | `#[lacking_role(s)]` </br> `#[lacking_role = s]`                                                                                              | If a user lacks required roles, this will treat how commands will be displayed.                                                                                                                                                                  | `s` is a string. Accepts `strike` (strikethroughs), `hide` (will not be listed) or `nothing`(leave be).    |
-/// | `#[lacking_ownership(s)]` </br> `#[lacking_ownership = s]`                                                                                    | If a user lacks ownership, this will treat how these commands will be displayed.                                                                                                                                                                 | `s` is a string. Accepts `strike` (strikethroughs), `hide` (will not be listed) or `nothing`(leave be).    |
-/// | `#[lacking_permissions(s)]` </br> `#[lacking_permissions = s]`                                                                                | If a user lacks permissions, this will treat how commands will be displayed.                                                                                                                                                                     | `s` is a string. Accepts `strike` (strikethroughs), `hide` (will not be listed) or `nothing`(leave be).    |
-/// | `#[lacking_conditions(s)]` </br> `#[lacking_conditions = s]`                                                                                  | If conditions (of a check) may be lacking by the user, this will treat how these commands will be displayed.                                                                                                                                     | `s` is a string. Accepts `strike` (strikethroughs), `hide` (will not be listed) or `nothing`(leave be).    |
-/// | `#[wrong_channel(s)]` </br> `#[wrong_channel = s]`                                                                                            | If a user is using the help-command in a channel where a command is not available, this behaviour will be executed.                                                                                                                              | `s` is a string. Accepts `strike` (strikethroughs), `hide` (will not be listed) or `nothing`(leave be).    |
+/// | `#[suggestion_text(s)]` <br /> `#[suggestion_text = s]`                                                                                        | When suggesting a command's name                                                                                                                                                                                                                 | `s` is a string                                                                                            |
+/// | `#[no_help_available_text(s)]` <br /> `#[no_help_available_text = s]`                                                                          | When help is unavailable for a command.                                                                                                                                                                                                          | `s` is a string                                                                                            |
+/// | `#[usage_label(s)]` <br /> `#[usage_label = s]`                                                                                                | How should the command be used.                                                                                                                                                                                                                  | `s` is a string                                                                                            |
+/// | `#[usage_sample_label(s)]` <br /> `#[usage_sample_label = s]`                                                                                  | Actual sample label.                                                                                                                                                                                                                             | `s` is a string                                                                                            |
+/// | `#[ungrouped_label(s)]` <br /> `#[ungrouped_label = s]`                                                                                        | Ungrouped commands label.                                                                                                                                                                                                                        | `s` is a string                                                                                            |
+/// | `#[grouped_label(s)]` <br /> `#[grouped_label = s]`                                                                                            | Grouped commands label.                                                                                                                                                                                                                          | `s` is a string                                                                                            |
+/// | `#[sub_commands_label(s)]` <br /> `#[sub_commands_label = s]`                                                                                  | Sub commands label.                                                                                                          | `s` is a string
+/// | `#[description_label(s)]` <br /> `#[description_label = s]`                                                                                    | Label at the start of the description.                                                                                                                                                                                                           | `s` is a string                                                                                            |
+/// | `#[aliases_label(s)]` <br /> `#[aliases_label= s]`                                                                                             | Label for a command's aliases.                                                                                                                                                                                                                   | `s` is a string                                                                                            |
+/// | `#[guild_only_text(s)]` <br /> `#[guild_only_text = s]`                                                                                        | When a command is specific to guilds only.                                                                                                                                                                                                       | `s` is a string                                                                                            |
+/// | `#[checks_label(s)]` <br /> `#[checks_label = s]`                                                                                              | The header text when showing checks in the help command.                                                                                                                                                                                         | `s` is a string                                                                                            |
+/// | `#[dm_only_text(s)]` <br /> `#[dm_only_text = s]`                                                                                              | When a command is specific to dms only.                                                                                                                                                                                                          | `s` is a string                                                                                            |
+/// | `#[dm_and_guild_text(s)]` <br /> `#[dm_and_guild_text = s]`                                                                                    | When a command is usable in both guilds and dms.                                                                                                                                                                                                 | `s` is a string                                                                                            |
+/// | `#[available_text(s)]` <br /> `#[available_text = s]`                                                                                          | When a command is available.                                                                                                                                                                                                                     | `s` is a string                                                                                            |
+/// | `#[command_not_found_text(s)]` <br /> `#[command_not_found_text = s]`                                                                          | When a command wasn't found.                                                                                                                                                                                                                     | `s` is a string                                                                                            |
+/// | `#[individual_command_tip(s)]` <br /> `#[individual_command_tip = s]`                                                                          | How the user should access a command's details.                                                                                                                                                                                                  | `s` is a string                                                                                            |
+/// | `#[strikethrough_commands_tip_in_dm(s)]` <br />  `#[strikethrough_commands_tip_in_dm = s]`                                                     | Reasoning behind strikethrough-commands.<br /> *Only used in dms.*                                                                                                                                                                                | `s` is a string. If not provided, default text will be used instead.                                       |
+/// | `#[strikethrough_commands_tip_in_guild(s)]` <br /> `#[strikethrough_commands_tip_in_guild = s]`                                                | Reasoning behind strikethrough-commands.<br /> *Only used in guilds.*                                                                                                                                                                             | `s` is a string. If not provided, default text will be used instead.                                       |
+/// | `#[group_prefix(s)]` <br /> `#[group_prefix = s]`                                                                                              | For introducing a group's prefix                                                                                                                                                                                                                 | `s` is a string                                                                                            |
+/// | `#[lacking_role(s)]` <br /> `#[lacking_role = s]`                                                                                              | If a user lacks required roles, this will treat how commands will be displayed.                                                                                                                                                                  | `s` is a string. Accepts `strike` (strikethroughs), `hide` (will not be listed) or `nothing`(leave be).    |
+/// | `#[lacking_ownership(s)]` <br /> `#[lacking_ownership = s]`                                                                                    | If a user lacks ownership, this will treat how these commands will be displayed.                                                                                                                                                                 | `s` is a string. Accepts `strike` (strikethroughs), `hide` (will not be listed) or `nothing`(leave be).    |
+/// | `#[lacking_permissions(s)]` <br /> `#[lacking_permissions = s]`                                                                                | If a user lacks permissions, this will treat how commands will be displayed.                                                                                                                                                                     | `s` is a string. Accepts `strike` (strikethroughs), `hide` (will not be listed) or `nothing`(leave be).    |
+/// | `#[lacking_conditions(s)]` <br /> `#[lacking_conditions = s]`                                                                                  | If conditions (of a check) may be lacking by the user, this will treat how these commands will be displayed.                                                                                                                                     | `s` is a string. Accepts `strike` (strikethroughs), `hide` (will not be listed) or `nothing`(leave be).    |
+/// | `#[wrong_channel(s)]` <br /> `#[wrong_channel = s]`                                                                                            | If a user is using the help-command in a channel where a command is not available, this behaviour will be executed.                                                                                                                              | `s` is a string. Accepts `strike` (strikethroughs), `hide` (will not be listed) or `nothing`(leave be).    |
 /// | `#[embed_error_colour(n)]`                                                                                                                    | Colour that the help-embed will use upon an error.                                                                                                                                                                                               | `n` is a name to one of the provided constants of the `Colour` struct or an RGB value `#RRGGBB`.           |
 /// | `#[embed_success_colour(n)]`                                                                                                                  | Colour that the help-embed will use normally.                                                                                                                                                                                                    | `n` is a name to one of the provided constants of the `Colour` struct or an RGB value `#RRGGBB`.           |
-/// | `#[max_levenshtein_distance(n)]`                                                                                                              | How much should the help command search for a similiar name.</br> Indicator for a nested guild. The prefix will be repeated based on what kind of level the item sits. A sub-group would be level two, a sub-sub-group would be level three.     | `n` is a 64-bit, unsigned integer.                                                                         |
-/// | `#[indention_prefix(s)]` </br> `#[indention_prefix = s]`                                                                                      | The prefix used to express how deeply nested a command or group is.                                                                                                                                                                              | `s` is a string                                                                                            |
+/// | `#[max_levenshtein_distance(n)]`                                                                                                              | How much should the help command search for a similar name.<br /> Indicator for a nested guild. The prefix will be repeated based on what kind of level the item sits. A sub-group would be level two, a sub-sub-group would be level three.     | `n` is a 64-bit, unsigned integer.                                                                         |
+/// | `#[indention_prefix(s)]` <br /> `#[indention_prefix = s]`                                                                                      | The prefix used to express how deeply nested a command or group is.                                                                                                                                                                              | `s` is a string                                                                                            |
 ///
 /// [`command`]: macro@command
 #[proc_macro_attribute]
 pub fn help(attr: TokenStream, input: TokenStream) -> TokenStream {
     let mut fun = parse_macro_input!(input as CommandFun);
 
-    let names = if !attr.is_empty() {
+    let names = if attr.is_empty() {
+        vec!["help".to_string()]
+    } else {
         struct Names(Vec<String>);
 
         impl Parse for Names {
@@ -292,8 +285,6 @@ pub fn help(attr: TokenStream, input: TokenStream) -> TokenStream {
         let Names(names) = parse_macro_input!(attr as Names);
 
         names
-    } else {
-        vec!["help".to_string()]
     };
 
     // Revert the change for the names of documentation attributes done when
@@ -362,7 +353,7 @@ pub fn help(attr: TokenStream, input: TokenStream) -> TokenStream {
             String::from("~~`Strikethrough commands`~~ are unavailable because they");
         let mut is_any_option_strike = false;
 
-        let mut concat_with_comma = if options.lacking_permissions == HelpBehaviour::Strike {
+        let mut concat_with_comma = if let HelpBehaviour::Strike = options.lacking_permissions {
             is_any_option_strike = true;
             strike_text.push_str(" require permissions");
 
@@ -371,7 +362,7 @@ pub fn help(attr: TokenStream, input: TokenStream) -> TokenStream {
             false
         };
 
-        if options.lacking_role == HelpBehaviour::Strike {
+        if let HelpBehaviour::Strike = options.lacking_role {
             is_any_option_strike = true;
 
             if concat_with_comma {
@@ -382,7 +373,7 @@ pub fn help(attr: TokenStream, input: TokenStream) -> TokenStream {
             }
         }
 
-        if options.lacking_conditions == HelpBehaviour::Strike {
+        if let HelpBehaviour::Strike = options.lacking_conditions {
             is_any_option_strike = true;
 
             if concat_with_comma {
@@ -393,32 +384,27 @@ pub fn help(attr: TokenStream, input: TokenStream) -> TokenStream {
             }
         }
 
-        if options.wrong_channel == HelpBehaviour::Strike {
+        if let HelpBehaviour::Strike = options.wrong_channel {
             is_any_option_strike = true;
 
             if concat_with_comma {
-                let _ = write!(strike_text, ", or are limited to {}", dm_or_guild);
+                let _ = write!(strike_text, ", or are limited to {dm_or_guild}");
             } else {
-                let _ = write!(strike_text, " are limited to {}", dm_or_guild);
+                let _ = write!(strike_text, " are limited to {dm_or_guild}");
             }
         }
 
         strike_text.push('.');
-
-        if is_any_option_strike {
-            Some(strike_text)
-        } else {
-            None
-        }
+        is_any_option_strike.then_some(strike_text)
     }
 
-    if options.strikethrough_commands_tip_in_dm == None {
-        options.strikethrough_commands_tip_in_dm = produce_strike_text(&options, "direct messages");
+    if options.strikethrough_commands_tip_in_dm.is_none() {
+        options.strikethrough_commands_tip_in_dm = produce_strike_text(&options, "server messages");
     }
 
-    if options.strikethrough_commands_tip_in_guild == None {
+    if options.strikethrough_commands_tip_in_guild.is_none() {
         options.strikethrough_commands_tip_in_guild =
-            produce_strike_text(&options, "server messages");
+            produce_strike_text(&options, "direct messages");
     }
 
     let HelpOptions {
@@ -458,7 +444,7 @@ pub fn help(attr: TokenStream, input: TokenStream) -> TokenStream {
     propagate_err!(create_declaration_validations(&mut fun, DeclarFor::Help));
 
     let res = parse_quote!(serenity::framework::standard::CommandResult);
-    create_return_type_validation(&mut fun, res);
+    create_return_type_validation(&mut fun, &res);
 
     let options = fun.name.with_suffix(HELP_OPTIONS);
 
@@ -519,14 +505,12 @@ pub fn help(attr: TokenStream, input: TokenStream) -> TokenStream {
 
         #(#cooked)*
         #[allow(missing_docs)]
-        pub fn #nn<'fut>(#(#args),*) -> ::serenity::futures::future::BoxFuture<'fut, #ret> {
-            use ::serenity::futures::future::FutureExt;
-
-            async move {
+        pub fn #nn<'fut>(#(#args),*) -> std::pin::Pin<Box<dyn std::future::Future<Output = #ret> + Send + 'fut>> {
+            Box::pin(async move {
                 let _output: #ret = { #(#body)* };
                 #[allow(unreachable_code)]
                 _output
-            }.boxed()
+            })
         }
     })
     .into()
@@ -592,14 +576,14 @@ pub fn help(attr: TokenStream, input: TokenStream) -> TokenStream {
 /// | `#[prefix(pref)]`                                    | Assign just a single prefix.                                                       | `pref` is a string                                                                                                                                                                   |
 /// | `#[allowed_roles(roles)]`                            | Set of roles the user must possess                                                 | `roles` is a comma separated list of strings containing role names                                                                                                                   |
 /// | `#[only_in(ctx)]`                                    | Which environment the command can be executed in.                                  | `ctx` is a string with the accepted values `guild`/`guilds` and `dm`/ `dms` (Direct Message).                                                                                        |
-/// | `#[owners_only]` </br> `#[owners_only(b)]`           | If this command is exclusive to owners.                                            | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                      |
-/// | `#[owner_privilege]` </br> `#[owner_privilege(b)]`   | If owners can bypass certain options.                                              | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                      |
-/// | `#[help_available]` </br> `#[help_available(b)]`     | If the group should be displayed in the help message.                              | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                      |
+/// | `#[owners_only]` <br /> `#[owners_only(b)]`           | If this command is exclusive to owners.                                            | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                      |
+/// | `#[owner_privilege]` <br /> `#[owner_privilege(b)]`   | If owners can bypass certain options.                                              | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                      |
+/// | `#[help_available]` <br /> `#[help_available(b)]`     | If the group should be displayed in the help message.                              | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.                                                                                                      |
 /// | `#[checks(identifiers)]`                             | Preconditions that must met before the command's execution.                        | `identifiers` is a comma separated list of identifiers referencing functions marked by the `#[check]` macro                                                                          |
-/// | `#[required_permissions(perms)]`                     | Set of permissions the user must possess.                                          | `perms` is a comma separated list of permission names.</br> These can be found at [Discord's official documentation](https://discord.com/developers/docs/topics/permissions).        |
+/// | `#[required_permissions(perms)]`                     | Set of permissions the user must possess. <br /> In order for this attribute to work, "Presence Intent" and "Server Member Intent" options in bot application must be enabled and all intent flags must be enabled during client creation. | `perms` is a comma separated list of permission names.<br /> These can be found at [Discord's official documentation](https://discord.com/developers/docs/topics/permissions).        |
 /// | `#[default_command(cmd)]`                            | A command to execute if none of the group's prefixes are given.                    | `cmd` is an identifier referencing a function marked by the `#[command]` macro                                                                                                       |
-/// | `#[description(desc)]` </br> `#[description = desc]` | The group's description or summary.                                                | `desc` is a string describing the group.                                                                                                                                             |
-/// | `#[summary(desc)]` </br> `#[summary = desc]`         | A summary group description displayed when shown multiple groups.                  | `desc` is a string summaryly describing the group.                                                                                                                                   |
+/// | `#[description(desc)]` <br /> `#[description = desc]` | The group's description or summary.                                                | `desc` is a string describing the group.                                                                                                                                             |
+/// | `#[summary(desc)]` <br /> `#[summary = desc]`         | A summary group description displayed when shown multiple groups.                  | `desc` is a string summaryly describing the group.                                                                                                                                   |
 ///
 /// Documentation comments (`///`) applied onto the struct are interpreted as sugar for the
 /// `#[description]` option. When more than one application of the option is performed,
@@ -619,10 +603,10 @@ pub fn help(attr: TokenStream, input: TokenStream) -> TokenStream {
 pub fn group(attr: TokenStream, input: TokenStream) -> TokenStream {
     let group = parse_macro_input!(input as GroupStruct);
 
-    let name = if !attr.is_empty() {
-        parse_macro_input!(attr as Lit).to_str()
+    let name = if attr.is_empty() {
+        group.name.to_string_non_raw()
     } else {
-        group.name.to_string()
+        parse_macro_input!(attr as Lit).to_str()
     };
 
     let mut options = GroupOptions::new();
@@ -740,9 +724,9 @@ pub fn group(attr: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// | Syntax                                             | Description                                                              | Argument explanation                                                                 |
 /// |----------------------------------------------------|--------------------------------------------------------------------------|--------------------------------------------------------------------------------------|
-/// | `#[name(s)]` </br> `#[name = s]`                   | How the check should be listed in help.                                  | `s` is a string. If this option isn't provided, the value is assumed to be `"<fn>"`. |
-/// | `#[display_in_help]` </br> `#[display_in_help(b)]` | If the check should be listed in help. Has no effect on `check_in_help`. | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.      |
-/// | `#[check_in_help]` </br> `#[check_in_help(b)]`     | If the check should be evaluated in help.                                | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.      |
+/// | `#[name(s)]` <br /> `#[name = s]`                   | How the check should be listed in help.                                  | `s` is a string. If this option isn't provided, the value is assumed to be `"<fn>"`. |
+/// | `#[display_in_help]` <br /> `#[display_in_help(b)]` | If the check should be listed in help. Has no effect on `check_in_help`. | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.      |
+/// | `#[check_in_help]` <br /> `#[check_in_help(b)]`     | If the check should be evaluated in help.                                | `b` is a boolean. If no boolean is provided, the value is assumed to be `true`.      |
 #[proc_macro_attribute]
 pub fn check(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let mut fun = parse_macro_input!(input as CommandFun);
@@ -763,7 +747,7 @@ pub fn check(_attr: TokenStream, input: TokenStream) -> TokenStream {
             "display_in_help" => display_in_help = propagate_err!(attributes::parse(values)),
             "check_in_help" => check_in_help = propagate_err!(attributes::parse(values)),
             _ => {
-                return Error::new(span, format_args!("invalid attribute: {:?}", n))
+                return Error::new(span, format_args!("invalid attribute: {n:?}"))
                     .to_compile_error()
                     .into();
             },
@@ -773,7 +757,7 @@ pub fn check(_attr: TokenStream, input: TokenStream) -> TokenStream {
     propagate_err!(create_declaration_validations(&mut fun, DeclarFor::Check));
 
     let res = parse_quote!(std::result::Result<(), serenity::framework::standard::Reason>);
-    create_return_type_validation(&mut fun, res);
+    create_return_type_validation(&mut fun, &res);
 
     let n = fun.name.clone();
     let n2 = name.clone();
@@ -799,14 +783,12 @@ pub fn check(_attr: TokenStream, input: TokenStream) -> TokenStream {
 
         #(#cooked)*
         #[allow(missing_docs)]
-        #visibility fn #n<'fut>(#(#args),*) -> ::serenity::futures::future::BoxFuture<'fut, #ret> {
-            use ::serenity::futures::future::FutureExt;
-
-            async move {
+        #visibility fn #n<'fut>(#(#args),*) -> std::pin::Pin<Box<dyn std::future::Future<Output = #ret> + Send + 'fut>> {
+            Box::pin(async move {
                 let _output: #ret = { #(#body)* };
                 #[allow(unreachable_code)]
                 _output
-            }.boxed()
+            })
         }
     })
     .into()
@@ -832,9 +814,7 @@ pub fn check(_attr: TokenStream, input: TokenStream) -> TokenStream {
 /// use std::pin::Pin;
 ///
 /// fn foo(n: i32) -> Pin<Box<dyn std::future::Future<Output = i32>>> {
-///     Box::pin(async move {
-///         n + 4
-///     })
+///     Box::pin(async move { n + 4 })
 /// }
 /// ```
 ///
@@ -844,20 +824,14 @@ pub fn check(_attr: TokenStream, input: TokenStream) -> TokenStream {
 /// ```rust,no_run
 /// # #![feature(async_closure)]
 /// #
-/// async move |x: i32| {
-///     x * 2 + 4
-/// }
+/// async move |x: i32| x * 2 + 4
 /// # ;
 /// ```
 ///
 /// is changed to:
 ///
 /// ```rust,no_run
-/// |x: i32| {
-///     Box::pin(async move {
-///         x * 2 + 4
-///     })
-/// }
+/// |x: i32| Box::pin(async move { x * 2 + 4 })
 /// # ;
 /// ```
 ///
@@ -872,9 +846,7 @@ pub fn check(_attr: TokenStream, input: TokenStream) -> TokenStream {
 /// use std::pin::Pin;
 ///
 /// fn foo<'fut>(n: &'fut i32) -> Pin<Box<dyn std::future::Future<Output = i32> + 'fut>> {
-///     Box::pin(async move {
-///         *n + 4
-///     })
+///     Box::pin(async move { *n + 4 })
 /// }
 /// ```
 ///
@@ -926,7 +898,7 @@ pub fn hook(_attr: TokenStream, input: TokenStream) -> TokenStream {
 
     match hook {
         Hook::Function(mut fun) => {
-            let cooked = fun.cooked;
+            let attributes = fun.attributes;
             let visibility = fun.visibility;
             let fun_name = fun.name;
             let body = fun.body;
@@ -936,32 +908,28 @@ pub fn hook(_attr: TokenStream, input: TokenStream) -> TokenStream {
             let args = fun.args;
 
             (quote! {
-                #(#cooked)*
+                #(#attributes)*
                 #[allow(missing_docs)]
-                #visibility fn #fun_name<'fut>(#(#args),*) -> ::serenity::futures::future::BoxFuture<'fut, #ret> {
-                    use ::serenity::futures::future::FutureExt;
-
-                    async move {
+                #visibility fn #fun_name<'fut>(#(#args),*) -> std::pin::Pin<Box<dyn std::future::Future<Output = #ret> + Send + 'fut>> {
+                    Box::pin(async move {
                         let _output: #ret = { #(#body)* };
                         #[allow(unreachable_code)]
                         _output
-                    }.boxed()
+                    })
                 }
             })
                 .into()
         },
         Hook::Closure(closure) => {
-            let cooked = closure.cooked;
+            let attributes = closure.attributes;
             let args = closure.args;
             let ret = closure.ret;
             let body = closure.body;
 
             (quote! {
-                #(#cooked)*
+                #(#attributes)*
                 |#args| #ret {
-                    use ::serenity::futures::future::FutureExt;
-
-                    async move { #body }.boxed()
+                    Box::pin(async move { #body })
                 }
             })
             .into()

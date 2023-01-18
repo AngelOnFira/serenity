@@ -2,7 +2,7 @@ use enum_primitive::*;
 
 enum_from_primitive! {
 /// Discord Voice Gateway Websocket close codes.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CloseCode {
     /// Invalid Voice OP Code.
     UnknownOpcode = 4001,
@@ -52,9 +52,6 @@ impl CloseCode {
     ///
     /// Otherwise, the connection should be closed.
     pub fn should_resume(&self) -> bool {
-        match self {
-            CloseCode::VoiceServerCrash | CloseCode::SessionTimeout => true,
-            _ => false,
-        }
+        matches!(self, CloseCode::VoiceServerCrash | CloseCode::SessionTimeout)
     }
 }

@@ -1,5 +1,7 @@
 use bitflags::bitflags;
-use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
+use serde::de::Deserializer;
+use serde::ser::Serializer;
+use serde::{Deserialize, Serialize};
 
 bitflags! {
     /// Flag set describing how a speaker is sending audio.
@@ -29,6 +31,8 @@ impl SpeakingState {
     }
 }
 
+// Manual impl needed because object is sent as a flags integer
+// (could maybe just put `#[serde(transparent)]` on the type?)
 impl<'de> Deserialize<'de> for SpeakingState {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self::from_bits_truncate(u8::deserialize(deserializer)?))

@@ -1,10 +1,11 @@
-use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
+use serde::{Deserialize, Serialize};
+
 /// The client's response to a connection offer.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Deserialize, Serialize)]
 pub struct ProtocolData {
-    /// IP address of the client as seen by the server (*e.g.*, after using [IP DIscovery]
+    /// IP address of the client as seen by the server (*e.g.*, after using [IP Discovery]
     /// for NAT hole-punching).
     ///
     /// [IP Discovery]: https://docs.rs/discortp/discord/struct.IpDiscovery.html

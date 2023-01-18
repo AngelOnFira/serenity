@@ -10,7 +10,7 @@ fn str_to_reaction_type() {
     let reaction = ReactionType::try_from(emoji_str).unwrap();
     let reaction2 = ReactionType::Custom {
         animated: false,
-        id: EmojiId(600404340292059257),
+        id: EmojiId::new(600404340292059257),
         name: Some("customemoji".to_string()),
     };
     assert_eq!(reaction, reaction2);
@@ -22,7 +22,7 @@ fn str_to_reaction_type_animated() {
     let reaction = ReactionType::try_from(emoji_str).unwrap();
     let reaction2 = ReactionType::Custom {
         animated: true,
-        id: EmojiId(600409340292059257),
+        id: EmojiId::new(600409340292059257),
         name: Some("customemoji2".to_string()),
     };
     assert_eq!(reaction, reaction2);
@@ -34,7 +34,7 @@ fn string_to_reaction_type() {
     let reaction = ReactionType::try_from(emoji_string).unwrap();
     let reaction2 = ReactionType::Custom {
         animated: false,
-        id: EmojiId(600404340292059257),
+        id: EmojiId::new(600404340292059257),
         name: Some("customemoji".to_string()),
     };
     assert_eq!(reaction, reaction2);
@@ -80,4 +80,35 @@ fn str_to_reaction_type_mangled_4() {
 fn str_fromstr() {
     let emoji_str = "<:somestuff:1234";
     ReactionType::from_str(emoji_str).unwrap_err();
+}
+
+#[test]
+fn json_to_reaction_type() {
+    let s = r#"{"name": "foo", "id": "1"}"#;
+    let value = serde_json::from_str(s).unwrap();
+    assert!(matches!(value, ReactionType::Custom { .. }));
+    if let ReactionType::Custom {
+        name, ..
+    } = value
+    {
+        assert_eq!(name.as_deref(), Some("foo"));
+    }
+
+    let s = r#"{"name": null, "id": "1"}"#;
+    let value = serde_json::from_str(s).unwrap();
+    assert!(matches!(value, ReactionType::Custom { .. }));
+
+    let s = r#"{"id": "1"}"#;
+    let value = serde_json::from_str(s).unwrap();
+    assert!(matches!(value, ReactionType::Custom { .. }));
+
+    let s = r#"{"name": "foo"}"#;
+    let value = serde_json::from_str(s).unwrap();
+    assert!(matches!(value, ReactionType::Unicode(_)));
+    if let ReactionType::Unicode(value) = value {
+        assert_eq!(value, "foo");
+    }
+
+    let s = r#"{"name": null}"#;
+    assert!(serde_json::from_str::<ReactionType>(s).is_err());
 }

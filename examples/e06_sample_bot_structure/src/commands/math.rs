@@ -1,4 +1,5 @@
-use serenity::framework::standard::{macros::command, Args, CommandResult};
+use serenity::framework::standard::macros::command;
+use serenity::framework::standard::{Args, CommandResult};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 
@@ -9,7 +10,7 @@ pub async fn multiply(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
 
     let product = one * two;
 
-    msg.channel_id.say(&ctx.http, product).await?;
+    msg.channel_id.say(&ctx.http, product.to_string()).await?;
 
     Ok(())
 }

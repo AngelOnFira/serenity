@@ -23,52 +23,51 @@
 //! [`Client`]: crate::Client
 //! [model]: crate::model
 
-pub mod client;
-pub mod error;
-pub mod ratelimiting;
-pub mod request;
-pub mod routing;
-pub mod typing;
-pub mod utils;
+mod client;
+mod error;
+mod multipart;
+mod ratelimiting;
+mod request;
+mod routing;
+mod typing;
 
-use std::{
-    borrow::Cow,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use reqwest::Method;
 pub use reqwest::StatusCode;
-use tokio::fs::File;
 
 pub use self::client::*;
-pub use self::error::Error as HttpError;
-use self::request::Request;
+pub use self::error::*;
+pub use self::multipart::*;
+pub use self::ratelimiting::*;
+pub use self::request::*;
+pub use self::routing::*;
 pub use self::typing::*;
 #[cfg(feature = "cache")]
 use crate::cache::Cache;
 #[cfg(feature = "client")]
 use crate::client::Context;
 use crate::model::prelude::*;
-#[cfg(feature = "client")]
-use crate::CacheAndHttp;
 
 /// This trait will be required by functions that need [`Http`] and can
 /// optionally use a [`Cache`] to potentially avoid REST-requests.
 ///
-/// The types [`Context`], [`Cache`], and [`Http`] implement this trait
-/// and thus passing these to functions expecting `impl CacheHttp` is possible.
+/// The types [`Context`] and [`Http`] implement this trait
+/// and thus passing these to functions expecting `impl CacheHttp` is possible. For the full list
+/// of implementations, see the Implementors and Implementations on Foreign Types section in the
+/// generated docs.
 ///
 /// In a situation where you have the `cache`-feature enabled but you do not
 /// pass a cache, the function will behave as if no `cache`-feature is active.
 ///
 /// If you are calling a function that expects `impl CacheHttp` as argument
 /// and you wish to utilise the `cache`-feature but you got no access to a
-/// [`Context`], you can pass a tuple of `(CacheRwLock, Http)`.
+/// [`Context`], you can pass a tuple of `(&Arc<Cache>, &Http)`.
 pub trait CacheHttp: Send + Sync {
     fn http(&self) -> &Http;
 
     #[cfg(feature = "cache")]
+    #[must_use]
     fn cache(&self) -> Option<&Arc<Cache>> {
         None
     }
@@ -87,30 +86,21 @@ where
     }
 }
 
+impl<T> CacheHttp for Arc<T>
+where
+    T: CacheHttp,
+{
+    fn http(&self) -> &Http {
+        (**self).http()
+    }
+    #[cfg(feature = "cache")]
+    fn cache(&self) -> Option<&Arc<Cache>> {
+        (**self).cache()
+    }
+}
+
 #[cfg(feature = "client")]
 impl CacheHttp for Context {
-    fn http(&self) -> &Http {
-        &self.http
-    }
-    #[cfg(feature = "cache")]
-    fn cache(&self) -> Option<&Arc<Cache>> {
-        Some(&self.cache)
-    }
-}
-
-#[cfg(feature = "client")]
-impl CacheHttp for CacheAndHttp {
-    fn http(&self) -> &Http {
-        &self.http
-    }
-    #[cfg(feature = "cache")]
-    fn cache(&self) -> Option<&Arc<Cache>> {
-        Some(&self.cache)
-    }
-}
-
-#[cfg(feature = "client")]
-impl CacheHttp for Arc<CacheAndHttp> {
     fn http(&self) -> &Http {
         &self.http
     }
@@ -136,16 +126,10 @@ impl CacheHttp for Http {
     }
 }
 
-impl CacheHttp for Arc<Http> {
-    fn http(&self) -> &Http {
-        &*self
-    }
-}
-
 #[cfg(feature = "cache")]
 impl AsRef<Cache> for (&Arc<Cache>, &Http) {
     fn as_ref(&self) -> &Cache {
-        &**self.0
+        self.0
     }
 }
 
@@ -174,71 +158,14 @@ pub enum LightMethod {
 }
 
 impl LightMethod {
-    pub fn reqwest_method(self) -> Method {
+    #[must_use]
+    pub const fn reqwest_method(self) -> Method {
         match self {
-            LightMethod::Delete => Method::DELETE,
-            LightMethod::Get => Method::GET,
-            LightMethod::Patch => Method::PATCH,
-            LightMethod::Post => Method::POST,
-            LightMethod::Put => Method::PUT,
-        }
-    }
-}
-
-/// Enum that allows a user to pass a [`Path`] or a [`File`] type to [`send_files`]
-///
-/// [`send_files`]: crate::model::id::ChannelId::send_files
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum AttachmentType<'a> {
-    /// Indicates that the [`AttachmentType`] is a byte slice with a filename.
-    Bytes { data: Cow<'a, [u8]>, filename: String },
-    /// Indicates that the [`AttachmentType`] is a [`File`]
-    File { file: &'a File, filename: String },
-    /// Indicates that the [`AttachmentType`] is a [`Path`]
-    Path(&'a Path),
-    /// Indicates that the [`AttachmentType`] is an image URL.
-    Image(&'a str),
-}
-
-impl<'a> From<(&'a [u8], &str)> for AttachmentType<'a> {
-    fn from(params: (&'a [u8], &str)) -> AttachmentType<'a> {
-        AttachmentType::Bytes {
-            data: Cow::Borrowed(params.0),
-            filename: params.1.to_string(),
-        }
-    }
-}
-
-impl<'a> From<&'a str> for AttachmentType<'a> {
-    /// Constructs an [`AttachmentType`] from a string.
-    /// This string may refer to the path of a file on disk, or the http url to an image on the internet.
-    fn from(s: &'a str) -> AttachmentType<'_> {
-        if s.starts_with("http://") || s.starts_with("https://") {
-            AttachmentType::Image(s)
-        } else {
-            AttachmentType::Path(Path::new(s))
-        }
-    }
-}
-
-impl<'a> From<&'a Path> for AttachmentType<'a> {
-    fn from(path: &'a Path) -> AttachmentType<'_> {
-        AttachmentType::Path(path)
-    }
-}
-
-impl<'a> From<&'a PathBuf> for AttachmentType<'a> {
-    fn from(pathbuf: &'a PathBuf) -> AttachmentType<'_> {
-        AttachmentType::Path(pathbuf.as_path())
-    }
-}
-
-impl<'a> From<(&'a File, &str)> for AttachmentType<'a> {
-    fn from(f: (&'a File, &str)) -> AttachmentType<'a> {
-        AttachmentType::File {
-            file: f.0,
-            filename: f.1.to_string(),
+            Self::Delete => Method::DELETE,
+            Self::Get => Method::GET,
+            Self::Patch => Method::PATCH,
+            Self::Post => Method::POST,
+            Self::Put => Method::PUT,
         }
     }
 }
@@ -255,21 +182,21 @@ pub enum GuildPagination {
     Before(GuildId),
 }
 
-#[cfg(test)]
-mod test {
-    use std::path::Path;
+/// Representation of the method of a query to send for the [`get_scheduled_event_users`] function.
+///
+/// [`get_scheduled_event_users`]: Http::get_scheduled_event_users
+#[non_exhaustive]
+pub enum UserPagination {
+    /// The Id to get the users after.
+    After(UserId),
+    /// The Id to get the users before.
+    Before(UserId),
+}
 
-    use super::AttachmentType;
-
-    #[test]
-    fn test_attachment_type() {
-        assert!(matches!(
-            AttachmentType::from(Path::new("./dogs/corgis/kona.png")),
-            AttachmentType::Path(_)
-        ));
-        assert!(matches!(
-            AttachmentType::from(Path::new("./cats/copycat.png")),
-            AttachmentType::Path(_)
-        ));
-    }
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub enum MessagePagination {
+    After(MessageId),
+    Around(MessageId),
+    Before(MessageId),
 }

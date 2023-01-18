@@ -22,9 +22,12 @@
 //!
 //! Note that it may take a minute or more for a latency to be recorded or to
 //! update, depending on how often Discord tells the client to send a heartbeat.
-use std::{env, time::Duration};
+use std::env;
+use std::time::Duration;
 
-use serenity::{async_trait, model::gateway::Ready, prelude::*};
+use serenity::async_trait;
+use serenity::model::gateway::Ready;
+use serenity::prelude::*;
 use tokio::time::sleep;
 
 struct Handler;
@@ -36,7 +39,7 @@ impl EventHandler for Handler {
             // Note that array index 0 is 0-indexed, while index 1 is 1-indexed.
             //
             // This may seem unintuitive, but it models Discord's behaviour.
-            println!("{} is connected on shard {}/{}!", ready.user.name, shard[0], shard[1],);
+            println!("{} is connected on shard {}/{}!", ready.user.name, shard.id, shard.total,);
         }
     }
 }
@@ -46,8 +49,11 @@ async fn main() {
     // Configure the client with your Discord bot token in the environment.
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
+    let intents = GatewayIntents::GUILD_MESSAGES
+        | GatewayIntents::DIRECT_MESSAGES
+        | GatewayIntents::MESSAGE_CONTENT;
     let mut client =
-        Client::builder(&token).event_handler(Handler).await.expect("Err creating client");
+        Client::builder(&token, intents).event_handler(Handler).await.expect("Err creating client");
 
     // Here we clone a lock to the Shard Manager, and then move it into a new
     // thread. The thread will unlock the manager and print shards' status on a
@@ -73,6 +79,6 @@ async fn main() {
     // Start two shards. Note that there is an ~5 second ratelimit period
     // between when one shard can start after another.
     if let Err(why) = client.start_shards(2).await {
-        println!("Client error: {:?}", why);
+        println!("Client error: {why:?}");
     }
 }

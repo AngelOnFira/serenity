@@ -1,16 +1,15 @@
-use std::{
-    error::Error as StdError,
-    fmt::{Display, Formatter, Result as FmtResult},
-};
+use std::error::Error as StdError;
+use std::fmt;
 
-use reqwest::{header::InvalidHeaderValue, Error as ReqwestError, Response, StatusCode, Url};
-use serde::de::{Deserialize, Deserializer, Error as DeError};
+use reqwest::header::InvalidHeaderValue;
+use reqwest::{Error as ReqwestError, Method, Response, StatusCode};
+use serde::de::{Deserialize, Deserializer, Error as _};
 use url::ParseError as UrlError;
 
-use crate::http::utils::deserialize_errors;
-use crate::internal::prelude::{JsonMap, StdResult};
+use crate::internal::prelude::*;
+use crate::json::decode_resp;
 
-#[derive(Clone, Serialize, PartialEq, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct DiscordJsonError {
     /// The error code.
@@ -19,43 +18,11 @@ pub struct DiscordJsonError {
     pub message: String,
     /// The full explained errors with their path in the request
     /// body.
+    #[serde(default, deserialize_with = "deserialize_errors")]
     pub errors: Vec<DiscordJsonSingleError>,
 }
 
-impl<'de> Deserialize<'de> for DiscordJsonError {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> StdResult<Self, D::Error> {
-        let mut map = JsonMap::deserialize(deserializer)?;
-
-        let code = map
-            .remove("code")
-            .ok_or_else(|| DeError::custom("expected code"))
-            .and_then(isize::deserialize)
-            .map_err(DeError::custom)?;
-
-        let message = map
-            .remove("message")
-            .ok_or_else(|| DeError::custom("expected message"))
-            .and_then(String::deserialize)
-            .map_err(DeError::custom)?;
-
-        let errors = match map.contains_key("errors") {
-            true => map
-                .remove("errors")
-                .ok_or_else(|| DeError::custom("expected errors"))
-                .and_then(deserialize_errors)
-                .map_err(DeError::custom)?,
-            false => vec![],
-        };
-
-        Ok(Self {
-            code,
-            message,
-            errors,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct DiscordJsonSingleError {
     /// The error code.
     pub code: String,
@@ -65,25 +32,26 @@ pub struct DiscordJsonSingleError {
     pub path: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct ErrorResponse {
     pub status_code: StatusCode,
-    pub url: Url,
+    pub url: String,
+    pub method: Method,
     pub error: DiscordJsonError,
 }
 
 impl ErrorResponse {
     // We need a freestanding from-function since we cannot implement an async
     // From-trait.
-    pub async fn from_response(r: Response) -> Self {
+    pub async fn from_response(r: Response, method: Method) -> Self {
         ErrorResponse {
             status_code: r.status(),
-            url: r.url().clone(),
-            error: r.json().await.unwrap_or_else(|_| DiscordJsonError {
+            url: r.url().to_string(),
+            method,
+            error: decode_resp(r).await.unwrap_or_else(|e| DiscordJsonError {
                 code: -1,
-                message:
-                    "[Serenity] Could not decode json when receiving error response from discord!"
-                        .to_string(),
+                message: format!("[Serenity] Could not decode json when receiving error response from discord:, {e}"),
                 errors: vec![],
             }),
         }
@@ -92,7 +60,7 @@ impl ErrorResponse {
 
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum Error {
+pub enum HttpError {
     /// When a non-successful status code was received for a request.
     UnsuccessfulRequest(ErrorResponse),
     /// When the decoding of a ratelimit header could not be properly decoded
@@ -103,6 +71,8 @@ pub enum Error {
     RateLimitUtf8,
     /// When parsing an URL failed due to invalid input.
     Url(UrlError),
+    /// When parsing a Webhook fails due to invalid input.
+    InvalidWebhook,
     /// Header value contains invalid input.
     InvalidHeader(InvalidHeaderValue),
     /// Reqwest's Error contain information on why sending a request failed.
@@ -111,31 +81,31 @@ pub enum Error {
     InvalidScheme,
     /// When using a proxy with an invalid port.
     InvalidPort,
+    /// When an application id was expected but missing.
+    ApplicationIdMissing,
 }
 
-impl Error {
-    // We need a freestanding from-function since we cannot implement an async
-    // From-trait.
-    pub async fn from_response(r: Response) -> Self {
-        ErrorResponse::from_response(r).await.into()
-    }
-
+impl HttpError {
     /// Returns true when the error is caused by an unsuccessful request
+    #[must_use]
     pub fn is_unsuccessful_request(&self) -> bool {
         matches!(self, Self::UnsuccessfulRequest(_))
     }
 
     /// Returns true when the error is caused by the url containing invalid input
+    #[must_use]
     pub fn is_url_error(&self) -> bool {
         matches!(self, Self::Url(_))
     }
 
     /// Returns true when the error is caused by an invalid header
+    #[must_use]
     pub fn is_invalid_header(&self) -> bool {
         matches!(self, Self::InvalidHeader(_))
     }
 
     /// Returns the status code if the error is an unsuccessful request
+    #[must_use]
     pub fn status_code(&self) -> Option<StatusCode> {
         match self {
             Self::UnsuccessfulRequest(res) => Some(res.status_code),
@@ -144,43 +114,47 @@ impl Error {
     }
 }
 
-impl From<ErrorResponse> for Error {
-    fn from(error: ErrorResponse) -> Error {
-        Error::UnsuccessfulRequest(error)
+impl From<ErrorResponse> for HttpError {
+    fn from(error: ErrorResponse) -> Self {
+        Self::UnsuccessfulRequest(error)
     }
 }
 
-impl From<ReqwestError> for Error {
-    fn from(error: ReqwestError) -> Error {
-        Error::Request(error)
+impl From<ReqwestError> for HttpError {
+    fn from(error: ReqwestError) -> Self {
+        Self::Request(error)
     }
 }
 
-impl From<UrlError> for Error {
-    fn from(error: UrlError) -> Error {
-        Error::Url(error)
+impl From<UrlError> for HttpError {
+    fn from(error: UrlError) -> Self {
+        Self::Url(error)
     }
 }
 
-impl From<InvalidHeaderValue> for Error {
-    fn from(error: InvalidHeaderValue) -> Error {
-        Error::InvalidHeader(error)
+impl From<InvalidHeaderValue> for HttpError {
+    fn from(error: InvalidHeaderValue) -> Self {
+        Self::InvalidHeader(error)
     }
 }
 
-impl Display for Error {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+impl fmt::Display for HttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::UnsuccessfulRequest(e) => {
+            Self::UnsuccessfulRequest(e) => {
                 f.write_str(&e.error.message)?;
 
-                // Put Discord's human readable error explanations in parantheses
+                // Put Discord's human readable error explanations in parentheses
                 let mut errors_iter = e.error.errors.iter();
                 if let Some(error) = errors_iter.next() {
                     f.write_str(" (")?;
+                    f.write_str(&error.path)?;
+                    f.write_str(": ")?;
                     f.write_str(&error.message)?;
                     for error in errors_iter {
                         f.write_str(", ")?;
+                        f.write_str(&error.path)?;
+                        f.write_str(": ")?;
                         f.write_str(&error.message)?;
                     }
                     f.write_str(")")?;
@@ -188,34 +162,99 @@ impl Display for Error {
 
                 Ok(())
             },
-            Error::RateLimitI64F64 => f.write_str("Error decoding a header into an i64 or f64"),
-            Error::RateLimitUtf8 => f.write_str("Error decoding a header from UTF-8"),
-            Error::Url(_) => f.write_str("Provided URL is incorrect."),
-            Error::InvalidHeader(_) => f.write_str("Provided value is an invalid header value."),
-            Error::Request(_) => f.write_str("Error while sending HTTP request."),
-            Error::InvalidScheme => f.write_str("Invalid Url scheme."),
-            Error::InvalidPort => f.write_str("Invalid port."),
+            Self::RateLimitI64F64 => f.write_str("Error decoding a header into an i64 or f64"),
+            Self::RateLimitUtf8 => f.write_str("Error decoding a header from UTF-8"),
+            Self::Url(_) => f.write_str("Provided URL is incorrect."),
+            Self::InvalidWebhook => f.write_str("Provided URL is not a valid webhook."),
+            Self::InvalidHeader(_) => f.write_str("Provided value is an invalid header value."),
+            Self::Request(_) => f.write_str("Error while sending HTTP request."),
+            Self::InvalidScheme => f.write_str("Invalid Url scheme."),
+            Self::InvalidPort => f.write_str("Invalid port."),
+            Self::ApplicationIdMissing => f.write_str("Application id was expected but missing."),
         }
     }
 }
 
-impl StdError for Error {
+impl StdError for HttpError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            Error::Url(inner) => Some(inner),
-            Error::Request(inner) => Some(inner),
+            Self::Url(inner) => Some(inner),
+            Self::Request(inner) => Some(inner),
             _ => None,
         }
     }
 }
 
+#[allow(clippy::missing_errors_doc)]
+pub fn deserialize_errors<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> StdResult<Vec<DiscordJsonSingleError>, D::Error> {
+    let map: Value = Value::deserialize(deserializer)?;
+
+    if !map.is_object() {
+        return Ok(vec![]);
+    }
+
+    let mut errors = Vec::new();
+    let mut path = Vec::new();
+    loop_errors(&map, &mut errors, &mut path).map_err(D::Error::custom)?;
+
+    Ok(errors)
+}
+
+fn make_error(
+    errors_value: &Value,
+    errors: &mut Vec<DiscordJsonSingleError>,
+    path: &[&str],
+) -> StdResult<(), &'static str> {
+    let found_errors = errors_value.as_array().ok_or("expected array")?;
+
+    for error in found_errors {
+        let error_object = error.as_object().ok_or("expected object")?;
+
+        errors.push(DiscordJsonSingleError {
+            code: error_object
+                .get("code")
+                .ok_or("expected code")?
+                .as_str()
+                .ok_or("expected string")?
+                .to_owned(),
+            message: error_object
+                .get("message")
+                .ok_or("expected message")?
+                .as_str()
+                .ok_or("expected string")?
+                .to_owned(),
+            path: path.join("."),
+        });
+    }
+    Ok(())
+}
+
+fn loop_errors<'a>(
+    value: &'a Value,
+    errors: &mut Vec<DiscordJsonSingleError>,
+    path: &mut Vec<&'a str>,
+) -> StdResult<(), &'static str> {
+    for (key, value) in value.as_object().ok_or("expected object")? {
+        if key == "_errors" {
+            make_error(value, errors, path)?;
+        } else {
+            path.push(key);
+            loop_errors(value, errors, path)?;
+            path.pop();
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod test {
     use http_crate::response::Builder;
     use reqwest::ResponseBuilderExt;
 
     use super::*;
+    use crate::json::to_string;
 
     #[tokio::test]
     async fn test_error_response_into() {
@@ -228,15 +267,16 @@ mod test {
         let mut builder = Builder::new();
         builder = builder.status(403);
         builder = builder.url(String::from("https://ferris.crab").parse().unwrap());
-        let body_string = serde_json::to_string(&error).unwrap();
+        let body_string = to_string(&error).unwrap();
         let response = builder.body(body_string.into_bytes()).unwrap();
 
         let reqwest_response: reqwest::Response = response.into();
-        let error_response = ErrorResponse::from_response(reqwest_response).await;
+        let error_response = ErrorResponse::from_response(reqwest_response, Method::POST).await;
 
         let known = ErrorResponse {
             status_code: reqwest::StatusCode::from_u16(403).unwrap(),
-            url: String::from("https://ferris.crab").parse().unwrap(),
+            url: String::from("https://ferris.crab/"),
+            method: Method::POST,
             error,
         };
 

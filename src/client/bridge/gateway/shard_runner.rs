@@ -1,44 +1,38 @@
-use std::{borrow::Cow, sync::Arc};
+use std::borrow::Cow;
+use std::sync::Arc;
 
-use async_tungstenite::tungstenite::{
-    self,
-    error::Error as TungsteniteError,
-    protocol::frame::CloseFrame,
-};
 use futures::channel::mpsc::{self, UnboundedReceiver as Receiver, UnboundedSender as Sender};
-use futures::{SinkExt, StreamExt};
-use serde::Deserialize;
 use tokio::sync::RwLock;
+use tokio_tungstenite::tungstenite;
+use tokio_tungstenite::tungstenite::error::Error as TungsteniteError;
+use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
 use tracing::{debug, error, info, instrument, trace, warn};
 use typemap_rev::TypeMap;
 
 use super::event::{ClientEvent, ShardStageUpdateEvent};
+#[cfg(feature = "collector")]
+use super::CollectorCallback;
 use super::{ShardClientMessage, ShardId, ShardManagerMessage, ShardRunnerMessage};
+#[cfg(feature = "cache")]
+use crate::cache::Cache;
 #[cfg(feature = "voice")]
 use crate::client::bridge::voice::VoiceGatewayManager;
-use crate::client::dispatch::{dispatch, DispatchEvent};
-use crate::client::{EventHandler, RawEventHandler};
-#[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-use crate::collector::ComponentInteractionFilter;
-#[cfg(feature = "collector")]
-use crate::collector::{EventFilter, LazyArc, LazyReactionAction, MessageFilter, ReactionFilter};
+use crate::client::dispatch::{dispatch_client, dispatch_model};
+use crate::client::{Context, EventHandler, RawEventHandler};
 #[cfg(feature = "framework")]
 use crate::framework::Framework;
 use crate::gateway::{GatewayError, InterMessage, ReconnectType, Shard, ShardAction};
+use crate::http::Http;
 use crate::internal::prelude::*;
-use crate::internal::ws_impl::{ReceiverExt, SenderExt};
 use crate::model::event::{Event, GatewayEvent};
-#[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-use crate::model::interactions::{Interaction, InteractionType};
-use crate::CacheAndHttp;
 
 /// A runner for managing a [`Shard`] and its respective WebSocket client.
 pub struct ShardRunner {
     data: Arc<RwLock<TypeMap>>,
-    event_handler: Option<Arc<dyn EventHandler>>,
-    raw_event_handler: Option<Arc<dyn RawEventHandler>>,
+    event_handlers: Vec<Arc<dyn EventHandler>>,
+    raw_event_handlers: Vec<Arc<dyn RawEventHandler>>,
     #[cfg(feature = "framework")]
-    framework: Arc<Box<dyn Framework + Send + Sync>>,
+    framework: Option<Arc<dyn Framework>>,
     manager_tx: Sender<ShardManagerMessage>,
     // channel to receive messages from the shard manager and dispatches
     runner_rx: Receiver<InterMessage>,
@@ -46,16 +40,12 @@ pub struct ShardRunner {
     runner_tx: Sender<InterMessage>,
     pub(crate) shard: Shard,
     #[cfg(feature = "voice")]
-    voice_manager: Option<Arc<dyn VoiceGatewayManager + Send + Sync + 'static>>,
-    cache_and_http: Arc<CacheAndHttp>,
+    voice_manager: Option<Arc<dyn VoiceGatewayManager + 'static>>,
+    #[cfg(feature = "cache")]
+    pub cache: Arc<Cache>,
+    pub http: Arc<Http>,
     #[cfg(feature = "collector")]
-    event_filters: Vec<EventFilter>,
-    #[cfg(feature = "collector")]
-    message_filters: Vec<MessageFilter>,
-    #[cfg(feature = "collector")]
-    reaction_filters: Vec<ReactionFilter>,
-    #[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-    component_interaction_filters: Vec<ComponentInteractionFilter>,
+    collectors: Vec<CollectorCallback>,
 }
 
 impl ShardRunner {
@@ -67,23 +57,19 @@ impl ShardRunner {
             runner_rx: rx,
             runner_tx: tx,
             data: opt.data,
-            event_handler: opt.event_handler,
-            raw_event_handler: opt.raw_event_handler,
+            event_handlers: opt.event_handlers,
+            raw_event_handlers: opt.raw_event_handlers,
             #[cfg(feature = "framework")]
             framework: opt.framework,
             manager_tx: opt.manager_tx,
             shard: opt.shard,
             #[cfg(feature = "voice")]
             voice_manager: opt.voice_manager,
-            cache_and_http: opt.cache_and_http,
+            #[cfg(feature = "cache")]
+            cache: opt.cache,
+            http: opt.http,
             #[cfg(feature = "collector")]
-            event_filters: Vec::new(),
-            #[cfg(feature = "collector")]
-            message_filters: Vec::new(),
-            #[cfg(feature = "collector")]
-            reaction_filters: Vec::new(),
-            #[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-            component_interaction_filters: vec![],
+            collectors: vec![],
         }
     }
 
@@ -137,10 +123,10 @@ impl ShardRunner {
                 let e = ClientEvent::ShardStageUpdate(ShardStageUpdateEvent {
                     new: post,
                     old: pre,
-                    shard_id: ShardId(self.shard.shard_info()[0]),
+                    shard_id: ShardId(self.shard.shard_info().id),
                 });
 
-                self.dispatch(DispatchEvent::Client(e)).await;
+                dispatch_client(e, self.make_context(), self.event_handlers.clone()).await;
             }
 
             match action {
@@ -176,11 +162,17 @@ impl ShardRunner {
 
             if let Some(event) = event {
                 #[cfg(feature = "collector")]
-                {
-                    self.handle_filters(&event);
-                }
+                self.collectors.retain_mut(|callback| (callback.0)(&event));
 
-                self.dispatch(DispatchEvent::Model(event)).await;
+                dispatch_model(
+                    event,
+                    self.make_context(),
+                    #[cfg(feature = "framework")]
+                    self.framework.clone(),
+                    self.event_handlers.clone(),
+                    self.raw_event_handlers.clone(),
+                )
+                .await;
             }
 
             if !successful && !self.shard.stage().is_connecting() {
@@ -188,67 +180,6 @@ impl ShardRunner {
             }
             trace!("[ShardRunner {:?}] loop iteration reached the end.", self.shard.shard_info());
         }
-    }
-
-    /// Lets filters check the `event` to send them to collectors if the `event`
-    /// is accepted by them.
-    #[cfg(feature = "collector")]
-    fn handle_filters(&mut self, event: &Event) {
-        /// Unlike [`Vec`]'s `retain`, allows mutable references in `f`.
-        fn retain<T, F>(vec: &mut Vec<T>, mut f: F)
-        where
-            F: FnMut(&mut T) -> bool,
-        {
-            let len = vec.len();
-            let mut del = 0;
-            {
-                let v = &mut **vec;
-
-                for i in 0..len {
-                    if !f(&mut v[i]) {
-                        del += 1;
-                    } else if del > 0 {
-                        v.swap(i - del, i);
-                    }
-                }
-            }
-
-            if del > 0 {
-                vec.truncate(len - del);
-            }
-        }
-
-        match &event {
-            Event::MessageCreate(ref msg_event) => {
-                let mut msg = LazyArc::new(&msg_event.message);
-                retain(&mut self.message_filters, |f| f.send_message(&mut msg));
-            },
-            Event::ReactionAdd(ref reaction_event) => {
-                let mut reaction = LazyReactionAction::new(&reaction_event.reaction, true);
-                retain(&mut self.reaction_filters, |f| f.send_reaction(&mut reaction));
-            },
-            Event::ReactionRemove(ref reaction_event) => {
-                let mut reaction = LazyReactionAction::new(&reaction_event.reaction, false);
-                retain(&mut self.reaction_filters, |f| f.send_reaction(&mut reaction));
-            },
-            #[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-            Event::InteractionCreate(ref interaction_event) => {
-                if interaction_event.interaction.kind() == InteractionType::MessageComponent {
-                    if let Interaction::MessageComponent(ref interaction) =
-                        interaction_event.interaction
-                    {
-                        let mut interaction = LazyArc::new(interaction);
-                        retain(&mut self.component_interaction_filters, |f| {
-                            f.send_interaction(&mut interaction)
-                        });
-                    }
-                }
-            },
-            _ => {},
-        }
-
-        let mut event = LazyArc::new(event);
-        retain(&mut self.event_filters, |f| f.send_event(&mut event));
     }
 
     /// Clones the internal copy of the Sender to the shard runner.
@@ -286,22 +217,22 @@ impl ShardRunner {
     async fn checked_shutdown(&mut self, id: ShardId, close_code: u16) -> bool {
         // First verify the ID so we know for certain this runner is
         // to shutdown.
-        if id.0 != self.shard.shard_info()[0] {
+        if id.0 != self.shard.shard_info().id {
             // Not meant for this runner for some reason, don't
             // shutdown.
             return true;
         }
 
         // Send a Close Frame to Discord, which allows a bot to "log off"
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = self
-            .shard
-            .client
-            .close(Some(CloseFrame {
-                code: close_code.into(),
-                reason: Cow::from(""),
-            }))
-            .await;
+        drop(
+            self.shard
+                .client
+                .close(Some(CloseFrame {
+                    code: close_code.into(),
+                    reason: Cow::from(""),
+                }))
+                .await,
+        );
 
         // In return, we wait for either a Close Frame response, or an error, after which this WS is deemed
         // disconnected from Discord.
@@ -331,21 +262,15 @@ impl ShardRunner {
         false
     }
 
-    #[inline]
-    #[instrument(skip(self, event))]
-    async fn dispatch(&self, event: DispatchEvent) {
-        dispatch(
-            event,
-            #[cfg(feature = "framework")]
-            &self.framework,
-            &self.data,
-            &self.event_handler,
-            &self.raw_event_handler,
-            &self.runner_tx,
-            self.shard.shard_info()[0],
-            Arc::clone(&self.cache_and_http),
+    fn make_context(&self) -> Context {
+        Context::new(
+            Arc::clone(&self.data),
+            self.runner_tx.clone(),
+            self.shard.shard_info().id,
+            Arc::clone(&self.http),
+            #[cfg(feature = "cache")]
+            Arc::clone(&self.cache),
         )
-        .await;
     }
 
     // Handles a received value over the shard runner rx channel.
@@ -357,121 +282,89 @@ impl ShardRunner {
     #[instrument(skip(self))]
     async fn handle_rx_value(&mut self, value: InterMessage) -> bool {
         match value {
-            InterMessage::Client(value) => match *value {
-                ShardClientMessage::Manager(ShardManagerMessage::Restart(id)) => {
-                    self.checked_shutdown(id, 4000).await
-                },
-                ShardClientMessage::Manager(ShardManagerMessage::Shutdown(id, code)) => {
-                    self.checked_shutdown(id, code).await
-                },
-                ShardClientMessage::Manager(ShardManagerMessage::ShutdownAll) => {
-                    // This variant should never be received.
-                    warn!("[ShardRunner {:?}] Received a ShutdownAll?", self.shard.shard_info(),);
+            InterMessage::Client(value) => match value {
+                ShardClientMessage::Manager(msg) => match msg {
+                    ShardManagerMessage::Restart(id) => self.checked_shutdown(id, 4000).await,
+                    ShardManagerMessage::Shutdown(id, code) => {
+                        self.checked_shutdown(id, code).await
+                    },
+                    ShardManagerMessage::ShutdownAll => {
+                        // This variant should never be received.
+                        warn!(
+                            "[ShardRunner {:?}] Received a ShutdownAll?",
+                            self.shard.shard_info(),
+                        );
 
-                    true
-                },
-                ShardClientMessage::Manager(ShardManagerMessage::ShardUpdate {
-                    ..
-                }) => {
-                    // nb: not sent here
+                        true
+                    },
+                    ShardManagerMessage::ShardUpdate {
+                        ..
+                    }
+                    | ShardManagerMessage::ShutdownInitiated
+                    | ShardManagerMessage::ShutdownFinished(_) => {
+                        // nb: not sent here
+                        true
+                    },
+                    ShardManagerMessage::ShardDisallowedGatewayIntents
+                    | ShardManagerMessage::ShardInvalidAuthentication
+                    | ShardManagerMessage::ShardInvalidGatewayIntents => {
+                        // These variants should never be received.
+                        warn!("[ShardRunner {:?}] Received a ShardError?", self.shard.shard_info(),);
 
-                    true
+                        true
+                    },
                 },
-                ShardClientMessage::Manager(ShardManagerMessage::ShutdownInitiated) => {
-                    // nb: not sent here
-
-                    true
+                ShardClientMessage::Runner(msg) => match *msg {
+                    ShardRunnerMessage::ChunkGuild {
+                        guild_id,
+                        limit,
+                        filter,
+                        nonce,
+                    } => self
+                        .shard
+                        .chunk_guild(guild_id, limit, filter, nonce.as_deref())
+                        .await
+                        .is_ok(),
+                    ShardRunnerMessage::Close(code, reason) => {
+                        let reason = reason.unwrap_or_default();
+                        let close = CloseFrame {
+                            code: code.into(),
+                            reason: Cow::from(reason),
+                        };
+                        self.shard.client.close(Some(close)).await.is_ok()
+                    },
+                    ShardRunnerMessage::Message(msg) => self.shard.client.send(msg).await.is_ok(),
+                    ShardRunnerMessage::SetActivity(activity) => {
+                        // To avoid a clone of `activity`, we do a little bit of
+                        // trickery here:
+                        //
+                        // First, we obtain a reference to the current presence of
+                        // the shard, and create a new presence tuple of the new
+                        // activity we received over the channel as well as the
+                        // online status that the shard already had.
+                        //
+                        // We then (attempt to) send the websocket message with the
+                        // status update, expressively returning:
+                        //
+                        // - whether the message successfully sent
+                        // - the original activity we received over the channel
+                        self.shard.set_activity(activity);
+                        self.shard.update_presence().await.is_ok()
+                    },
+                    ShardRunnerMessage::SetPresence(activity, status) => {
+                        self.shard.set_presence(activity, status);
+                        self.shard.update_presence().await.is_ok()
+                    },
+                    ShardRunnerMessage::SetStatus(status) => {
+                        self.shard.set_status(status);
+                        self.shard.update_presence().await.is_ok()
+                    },
+                    #[cfg(feature = "collector")]
+                    ShardRunnerMessage::AddCollector(collector) => {
+                        self.collectors.push(collector);
+                        true
+                    },
                 },
-                ShardClientMessage::Manager(ShardManagerMessage::ShutdownFinished(_)) => {
-                    // nb: not sent here
-
-                    true
-                },
-                ShardClientMessage::Manager(ShardManagerMessage::ShardDisallowedGatewayIntents)
-                | ShardClientMessage::Manager(ShardManagerMessage::ShardInvalidAuthentication)
-                | ShardClientMessage::Manager(ShardManagerMessage::ShardInvalidGatewayIntents) => {
-                    // These variants should never be received.
-                    warn!("[ShardRunner {:?}] Received a ShardError?", self.shard.shard_info(),);
-
-                    true
-                },
-                ShardClientMessage::Runner(ShardRunnerMessage::ChunkGuild {
-                    guild_id,
-                    limit,
-                    filter,
-                    nonce,
-                }) => {
-                    self.shard.chunk_guild(guild_id, limit, filter, nonce.as_deref()).await.is_ok()
-                },
-                ShardClientMessage::Runner(ShardRunnerMessage::Close(code, reason)) => {
-                    let reason = reason.unwrap_or_else(String::new);
-                    let close = CloseFrame {
-                        code: code.into(),
-                        reason: Cow::from(reason),
-                    };
-                    self.shard.client.close(Some(close)).await.is_ok()
-                },
-                ShardClientMessage::Runner(ShardRunnerMessage::Message(msg)) => {
-                    self.shard.client.send(msg).await.is_ok()
-                },
-                ShardClientMessage::Runner(ShardRunnerMessage::SetActivity(activity)) => {
-                    // To avoid a clone of `activity`, we do a little bit of
-                    // trickery here:
-                    //
-                    // First, we obtain a reference to the current presence of
-                    // the shard, and create a new presence tuple of the new
-                    // activity we received over the channel as well as the
-                    // online status that the shard already had.
-                    //
-                    // We then (attempt to) send the websocket message with the
-                    // status update, expressively returning:
-                    //
-                    // - whether the message successfully sent
-                    // - the original activity we received over the channel
-                    self.shard.set_activity(activity);
-
-                    self.shard.update_presence().await.is_ok()
-                },
-                ShardClientMessage::Runner(ShardRunnerMessage::SetPresence(status, activity)) => {
-                    self.shard.set_presence(status, activity);
-
-                    self.shard.update_presence().await.is_ok()
-                },
-                ShardClientMessage::Runner(ShardRunnerMessage::SetStatus(status)) => {
-                    self.shard.set_status(status);
-
-                    self.shard.update_presence().await.is_ok()
-                },
-                #[cfg(feature = "collector")]
-                ShardClientMessage::Runner(ShardRunnerMessage::SetEventFilter(collector)) => {
-                    self.event_filters.push(collector);
-
-                    true
-                },
-                #[cfg(feature = "collector")]
-                ShardClientMessage::Runner(ShardRunnerMessage::SetMessageFilter(collector)) => {
-                    self.message_filters.push(collector);
-
-                    true
-                },
-                #[cfg(feature = "collector")]
-                ShardClientMessage::Runner(ShardRunnerMessage::SetReactionFilter(collector)) => {
-                    self.reaction_filters.push(collector);
-
-                    true
-                },
-                #[cfg(all(feature = "unstable_discord_api", feature = "collector"))]
-                ShardClientMessage::Runner(ShardRunnerMessage::SetComponentInteractionFilter(
-                    collector,
-                )) => {
-                    self.component_interaction_filters.push(collector);
-
-                    true
-                },
-            },
-            InterMessage::Json(value) => {
-                // Value must be forwarded over the websocket
-                self.shard.client.send_json(&value).await.is_ok()
             },
         }
     }
@@ -480,19 +373,19 @@ impl ShardRunner {
     #[instrument(skip(self))]
     async fn handle_voice_event(&self, event: &Event) {
         if let Some(voice_manager) = &self.voice_manager {
-            match *event {
+            match event {
                 Event::Ready(_) => {
                     voice_manager
-                        .register_shard(self.shard.shard_info()[0], self.runner_tx.clone())
+                        .register_shard(self.shard.shard_info().id, self.runner_tx.clone())
                         .await;
                 },
-                Event::VoiceServerUpdate(ref event) => {
+                Event::VoiceServerUpdate(event) => {
                     if let Some(guild_id) = event.guild_id {
                         voice_manager.server_update(guild_id, &event.endpoint, &event.token).await;
                     }
                 },
-                Event::VoiceStateUpdate(ref event) => {
-                    if let Some(guild_id) = event.guild_id {
+                Event::VoiceStateUpdate(event) => {
+                    if let Some(guild_id) = event.voice_state.guild_id {
                         voice_manager.state_update(guild_id, &event.voice_state).await;
                     }
                 },
@@ -525,9 +418,7 @@ impl ShardRunner {
                         self.shard.shard_info(),
                     );
 
-                    #[allow(clippy::let_underscore_must_use)]
-                    let _ = self.request_restart().await;
-
+                    drop(self.request_restart().await);
                     return Ok(false);
                 },
                 Err(_) => break,
@@ -544,8 +435,7 @@ impl ShardRunner {
     #[instrument(skip(self))]
     async fn recv_event(&mut self) -> Result<(Option<Event>, Option<ShardAction>, bool)> {
         let gw_event = match self.shard.client.recv_json().await {
-            Ok(Some(value)) => GatewayEvent::deserialize(value).map(Some).map_err(From::from),
-            Ok(None) => Ok(None),
+            Ok(inner) => Ok(inner),
             Err(Error::Tungstenite(TungsteniteError::Io(_))) => {
                 debug!("Attempting to auto-reconnect");
 
@@ -627,7 +517,7 @@ impl ShardRunner {
         #[cfg(feature = "voice")]
         {
             if let Ok(GatewayEvent::Dispatch(_, ref event)) = event {
-                self.handle_voice_event(&event).await;
+                self.handle_voice_event(event).await;
             }
         }
 
@@ -644,7 +534,7 @@ impl ShardRunner {
         self.update_manager();
 
         debug!("[ShardRunner {:?}] Requesting restart", self.shard.shard_info(),);
-        let shard_id = ShardId(self.shard.shard_info()[0]);
+        let shard_id = ShardId(self.shard.shard_info().id);
         let msg = ShardManagerMessage::Restart(shard_id);
 
         if let Err(error) = self.manager_tx.unbounded_send(msg) {
@@ -661,25 +551,26 @@ impl ShardRunner {
 
     #[instrument(skip(self))]
     fn update_manager(&self) {
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = self.manager_tx.unbounded_send(ShardManagerMessage::ShardUpdate {
-            id: ShardId(self.shard.shard_info()[0]),
+        drop(self.manager_tx.unbounded_send(ShardManagerMessage::ShardUpdate {
+            id: ShardId(self.shard.shard_info().id),
             latency: self.shard.latency(),
             stage: self.shard.stage(),
-        });
+        }));
     }
 }
 
 /// Options to be passed to [`ShardRunner::new`].
 pub struct ShardRunnerOptions {
     pub data: Arc<RwLock<TypeMap>>,
-    pub event_handler: Option<Arc<dyn EventHandler>>,
-    pub raw_event_handler: Option<Arc<dyn RawEventHandler>>,
+    pub event_handlers: Vec<Arc<dyn EventHandler>>,
+    pub raw_event_handlers: Vec<Arc<dyn RawEventHandler>>,
     #[cfg(feature = "framework")]
-    pub framework: Arc<Box<dyn Framework + Send + Sync>>,
+    pub framework: Option<Arc<dyn Framework>>,
     pub manager_tx: Sender<ShardManagerMessage>,
     pub shard: Shard,
     #[cfg(feature = "voice")]
-    pub voice_manager: Option<Arc<dyn VoiceGatewayManager + Send + Sync>>,
-    pub cache_and_http: Arc<CacheAndHttp>,
+    pub voice_manager: Option<Arc<dyn VoiceGatewayManager>>,
+    #[cfg(feature = "cache")]
+    pub cache: Arc<Cache>,
+    pub http: Arc<Http>,
 }

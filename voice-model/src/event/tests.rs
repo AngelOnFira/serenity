@@ -1,13 +1,13 @@
-use super::Event;
-use crate::{
-    id::*,
-    opcode::OpCode,
-    payload::*,
-    protocol_data::ProtocolData,
-    speaking_state::SpeakingState,
-};
-use serde_test::{Configure, Token};
 use std::net::Ipv4Addr;
+
+use serde_test::{Configure, Token};
+
+use super::Event;
+use crate::id::*;
+use crate::opcode::Opcode;
+use crate::payload::*;
+use crate::protocol_data::ProtocolData;
+use crate::speaking_state::SpeakingState;
 
 #[test]
 fn deserialize_identify_json() {
@@ -30,10 +30,7 @@ fn deserialize_identify_json() {
         user_id: UserId(104694319306248192),
     };
 
-    assert!(match event {
-        Ok(Event::Identify(i)) if i == ident => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::Identify(i)) if i == ident));
 }
 
 #[test]
@@ -61,10 +58,7 @@ fn deserialize_select_protocol_json() {
         },
     };
 
-    assert!(match event {
-        Ok(Event::SelectProtocol(i)) if i == proto => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::SelectProtocol(i)) if i == proto));
 }
 
 #[test]
@@ -95,10 +89,7 @@ fn deserialize_ready_json() {
         ],
     };
 
-    assert!(match event {
-        Ok(Event::Ready(i)) if i == ready => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::Ready(i)) if i == ready));
 }
 
 #[test]
@@ -114,10 +105,7 @@ fn deserialize_heartbeat_json() {
         nonce: 1501184119561,
     };
 
-    assert!(match event {
-        Ok(Event::Heartbeat(i)) if i == hb => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::Heartbeat(i)) if i == hb));
 }
 
 #[test]
@@ -136,10 +124,7 @@ fn deserialize_session_description_json() {
         secret_key: vec![251, 100, 11],
     };
 
-    assert!(match event {
-        Ok(Event::SessionDescription(i)) if i == sd => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::SessionDescription(i)) if i == sd));
 }
 
 #[test]
@@ -161,10 +146,7 @@ fn deserialize_speaking_json() {
         user_id: None,
     };
 
-    assert!(match event {
-        Ok(Event::Speaking(i)) if i == speak => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::Speaking(i)) if i == speak));
 }
 
 #[test]
@@ -180,10 +162,7 @@ fn deserialize_heartbeat_ack_json() {
         nonce: 1501184119561,
     };
 
-    assert!(match event {
-        Ok(Event::HeartbeatAck(i)) if i == hb => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::HeartbeatAck(i)) if i == hb));
 }
 
 #[test]
@@ -205,10 +184,7 @@ fn deserialize_resume_json() {
         token: "my_token".into(),
     };
 
-    assert!(match event {
-        Ok(Event::Resume(i)) if i == resume => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::Resume(i)) if i == resume));
 }
 
 #[test]
@@ -242,10 +218,7 @@ fn deserialize_resumed_json() {
 
     let event = serde_json::from_str(json_data);
 
-    assert!(match event {
-        Ok(Event::Resumed) => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::Resumed)));
 }
 
 #[test]
@@ -267,10 +240,7 @@ fn deserialize_client_connect_json() {
         video_ssrc: 9012,
     };
 
-    assert!(match event {
-        Ok(Event::ClientConnect(i)) if i == conn => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::ClientConnect(i)) if i == conn));
 }
 
 #[test]
@@ -288,10 +258,7 @@ fn deserialize_client_disconnect_json() {
         user_id: UserId(1234),
     };
 
-    assert!(match event {
-        Ok(Event::ClientDisconnect(i)) if i == conn => true,
-        _ => false,
-    });
+    assert!(matches!(event, Ok(Event::ClientDisconnect(i)) if i == conn));
 }
 
 #[test]
@@ -304,34 +271,35 @@ fn serialize_identify() {
     }
     .into();
 
-    serde_test::assert_ser_tokens(
-        &value,
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::Identify as u8),
-            Token::Str("d"),
-            Token::Struct {
-                name: "Identify",
-                len: 4,
-            },
-            Token::Str("server_id"),
-            Token::NewtypeStruct { name: "GuildId" },
-            Token::Str("1"),
-            Token::Str("session_id"),
-            Token::Str("56f88a86dce65c65b9"),
-            Token::Str("token"),
-            Token::Str("56f88a86dce65c65b8"),
-            Token::Str("user_id"),
-            Token::NewtypeStruct { name: "UserId" },
-            Token::Str("2"),
-            Token::StructEnd,
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value, &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::Identify as u8),
+        Token::Str("d"),
+        Token::Struct {
+            name: "Identify",
+            len: 4,
+        },
+        Token::Str("server_id"),
+        Token::NewtypeStruct {
+            name: "GuildId",
+        },
+        Token::Str("1"),
+        Token::Str("session_id"),
+        Token::Str("56f88a86dce65c65b9"),
+        Token::Str("token"),
+        Token::Str("56f88a86dce65c65b8"),
+        Token::Str("user_id"),
+        Token::NewtypeStruct {
+            name: "UserId",
+        },
+        Token::Str("2"),
+        Token::StructEnd,
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
@@ -346,38 +314,35 @@ fn serialize_select_protocol() {
     }
     .into();
 
-    serde_test::assert_ser_tokens(
-        &value.readable(),
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::SelectProtocol as u8),
-            Token::Str("d"),
-            Token::Struct {
-                name: "SelectProtocol",
-                len: 2,
-            },
-            Token::Str("data"),
-            Token::Struct {
-                name: "ProtocolData",
-                len: 3,
-            },
-            Token::Str("address"),
-            Token::Str("192.168.0.141"),
-            Token::Str("mode"),
-            Token::Str("xsalsa20_poly1305_suffix"),
-            Token::Str("port"),
-            Token::U16(40404),
-            Token::StructEnd,
-            Token::Str("protocol"),
-            Token::Str("udp"),
-            Token::StructEnd,
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value.readable(), &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::SelectProtocol as u8),
+        Token::Str("d"),
+        Token::Struct {
+            name: "SelectProtocol",
+            len: 2,
+        },
+        Token::Str("data"),
+        Token::Struct {
+            name: "ProtocolData",
+            len: 3,
+        },
+        Token::Str("address"),
+        Token::Str("192.168.0.141"),
+        Token::Str("mode"),
+        Token::Str("xsalsa20_poly1305_suffix"),
+        Token::Str("port"),
+        Token::U16(40404),
+        Token::StructEnd,
+        Token::Str("protocol"),
+        Token::Str("udp"),
+        Token::StructEnd,
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
@@ -394,56 +359,55 @@ fn serialize_ready() {
     }
     .into();
 
-    serde_test::assert_ser_tokens(
-        &value.readable(),
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::Ready as u8),
-            Token::Str("d"),
-            Token::Struct {
-                name: "Ready",
-                len: 4,
-            },
-            Token::Str("ip"),
-            Token::Str("127.0.0.1"),
-            Token::Str("modes"),
-            Token::Seq { len: Some(3) },
-            Token::Str("xsalsa20_poly1305"),
-            Token::Str("xsalsa20_poly1305_suffix"),
-            Token::Str("xsalsa20_poly1305_lite"),
-            Token::SeqEnd,
-            Token::Str("port"),
-            Token::U16(12345),
-            Token::Str("ssrc"),
-            Token::U32(0xcafe_d00d),
-            Token::StructEnd,
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value.readable(), &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::Ready as u8),
+        Token::Str("d"),
+        Token::Struct {
+            name: "Ready",
+            len: 4,
+        },
+        Token::Str("ip"),
+        Token::Str("127.0.0.1"),
+        Token::Str("modes"),
+        Token::Seq {
+            len: Some(3),
+        },
+        Token::Str("xsalsa20_poly1305"),
+        Token::Str("xsalsa20_poly1305_suffix"),
+        Token::Str("xsalsa20_poly1305_lite"),
+        Token::SeqEnd,
+        Token::Str("port"),
+        Token::U16(12345),
+        Token::Str("ssrc"),
+        Token::U32(0xcafe_d00d),
+        Token::StructEnd,
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
 fn serialize_heartbeat() {
-    let value: Event = Heartbeat { nonce: 1234567890 }.into();
+    let value: Event = Heartbeat {
+        nonce: 1234567890,
+    }
+    .into();
 
-    serde_test::assert_ser_tokens(
-        &value,
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::Heartbeat as u8),
-            Token::Str("d"),
-            Token::Str("1234567890"),
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value, &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::Heartbeat as u8),
+        Token::Str("d"),
+        Token::Str("1234567890"),
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
@@ -454,34 +418,33 @@ fn serialize_session_description() {
     }
     .into();
 
-    serde_test::assert_ser_tokens(
-        &value,
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::SessionDescription as u8),
-            Token::Str("d"),
-            Token::Struct {
-                name: "SessionDescription",
-                len: 2,
-            },
-            Token::Str("mode"),
-            Token::Str("xsalsa20_poly1305_suffix"),
-            Token::Str("secret_key"),
-            Token::Seq { len: Some(5) },
-            Token::U8(1),
-            Token::U8(2),
-            Token::U8(3),
-            Token::U8(4),
-            Token::U8(5),
-            Token::SeqEnd,
-            Token::StructEnd,
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value, &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::SessionDescription as u8),
+        Token::Str("d"),
+        Token::Struct {
+            name: "SessionDescription",
+            len: 2,
+        },
+        Token::Str("mode"),
+        Token::Str("xsalsa20_poly1305_suffix"),
+        Token::Str("secret_key"),
+        Token::Seq {
+            len: Some(5),
+        },
+        Token::U8(1),
+        Token::U8(2),
+        Token::U8(3),
+        Token::U8(4),
+        Token::U8(5),
+        Token::SeqEnd,
+        Token::StructEnd,
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
@@ -494,53 +457,50 @@ fn serialize_speaking() {
     }
     .into();
 
-    serde_test::assert_ser_tokens(
-        &value,
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::Speaking as u8),
-            Token::Str("d"),
-            Token::Struct {
-                name: "Speaking",
-                len: 4,
-            },
-            Token::Str("delay"),
-            Token::Some,
-            Token::U32(0),
-            Token::Str("speaking"),
-            Token::U8(1),
-            Token::Str("ssrc"),
-            Token::U32(12345678),
-            Token::Str("user_id"),
-            Token::None,
-            Token::StructEnd,
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value, &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::Speaking as u8),
+        Token::Str("d"),
+        Token::Struct {
+            name: "Speaking",
+            len: 4,
+        },
+        Token::Str("delay"),
+        Token::Some,
+        Token::U32(0),
+        Token::Str("speaking"),
+        Token::U8(1),
+        Token::Str("ssrc"),
+        Token::U32(12345678),
+        Token::Str("user_id"),
+        Token::None,
+        Token::StructEnd,
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
 fn serialize_heartbeat_ack() {
-    let value: Event = HeartbeatAck { nonce: 1234567890 }.into();
+    let value: Event = HeartbeatAck {
+        nonce: 1234567890,
+    }
+    .into();
 
-    serde_test::assert_ser_tokens(
-        &value,
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::HeartbeatAck as u8),
-            Token::Str("d"),
-            Token::Str("1234567890"),
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value, &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::HeartbeatAck as u8),
+        Token::Str("d"),
+        Token::Str("1234567890"),
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
@@ -552,31 +512,30 @@ fn serialize_resume() {
     }
     .into();
 
-    serde_test::assert_ser_tokens(
-        &value,
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::Resume as u8),
-            Token::Str("d"),
-            Token::Struct {
-                name: "Resume",
-                len: 3,
-            },
-            Token::Str("server_id"),
-            Token::NewtypeStruct { name: "GuildId" },
-            Token::Str("1"),
-            Token::Str("session_id"),
-            Token::Str("sess_sess_sess_sess"),
-            Token::Str("token"),
-            Token::Str("my_token"),
-            Token::StructEnd,
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value, &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::Resume as u8),
+        Token::Str("d"),
+        Token::Struct {
+            name: "Resume",
+            len: 3,
+        },
+        Token::Str("server_id"),
+        Token::NewtypeStruct {
+            name: "GuildId",
+        },
+        Token::Str("1"),
+        Token::Str("session_id"),
+        Token::Str("sess_sess_sess_sess"),
+        Token::Str("token"),
+        Token::Str("my_token"),
+        Token::StructEnd,
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
@@ -586,46 +545,40 @@ fn serialize_hello() {
     }
     .into();
 
-    serde_test::assert_ser_tokens(
-        &value,
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::Hello as u8),
-            Token::Str("d"),
-            Token::Struct {
-                name: "Hello",
-                len: 1,
-            },
-            Token::Str("heartbeat_interval"),
-            Token::F64(41250.0),
-            Token::StructEnd,
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value, &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::Hello as u8),
+        Token::Str("d"),
+        Token::Struct {
+            name: "Hello",
+            len: 1,
+        },
+        Token::Str("heartbeat_interval"),
+        Token::F64(41250.0),
+        Token::StructEnd,
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
 fn serialize_resumed() {
     let value = Event::Resumed;
 
-    serde_test::assert_ser_tokens(
-        &value,
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::Resumed as u8),
-            Token::Str("d"),
-            Token::None,
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value, &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::Resumed as u8),
+        Token::Str("d"),
+        Token::None,
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
@@ -637,31 +590,30 @@ fn serialize_client_connect() {
     }
     .into();
 
-    serde_test::assert_ser_tokens(
-        &value,
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::ClientConnect as u8),
-            Token::Str("d"),
-            Token::Struct {
-                name: "ClientConnect",
-                len: 3,
-            },
-            Token::Str("audio_ssrc"),
-            Token::U32(12345),
-            Token::Str("user_id"),
-            Token::NewtypeStruct { name: "UserId" },
-            Token::Str("56"),
-            Token::Str("video_ssrc"),
-            Token::U32(67890),
-            Token::StructEnd,
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value, &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::ClientConnect as u8),
+        Token::Str("d"),
+        Token::Struct {
+            name: "ClientConnect",
+            len: 3,
+        },
+        Token::Str("audio_ssrc"),
+        Token::U32(12345),
+        Token::Str("user_id"),
+        Token::NewtypeStruct {
+            name: "UserId",
+        },
+        Token::Str("56"),
+        Token::Str("video_ssrc"),
+        Token::U32(67890),
+        Token::StructEnd,
+        Token::StructEnd,
+    ]);
 }
 
 #[test]
@@ -671,25 +623,24 @@ fn serialize_client_disconnect() {
     }
     .into();
 
-    serde_test::assert_ser_tokens(
-        &value,
-        &[
-            Token::Struct {
-                name: "Event",
-                len: 2,
-            },
-            Token::Str("op"),
-            Token::U8(OpCode::ClientDisconnect as u8),
-            Token::Str("d"),
-            Token::Struct {
-                name: "ClientDisconnect",
-                len: 1,
-            },
-            Token::Str("user_id"),
-            Token::NewtypeStruct { name: "UserId" },
-            Token::Str("56"),
-            Token::StructEnd,
-            Token::StructEnd,
-        ],
-    );
+    serde_test::assert_ser_tokens(&value, &[
+        Token::Struct {
+            name: "Event",
+            len: 2,
+        },
+        Token::Str("op"),
+        Token::U8(Opcode::ClientDisconnect as u8),
+        Token::Str("d"),
+        Token::Struct {
+            name: "ClientDisconnect",
+            len: 1,
+        },
+        Token::Str("user_id"),
+        Token::NewtypeStruct {
+            name: "UserId",
+        },
+        Token::Str("56"),
+        Token::StructEnd,
+        Token::StructEnd,
+    ]);
 }
