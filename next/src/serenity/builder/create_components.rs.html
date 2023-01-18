@@ -1293,7 +1293,7 @@
         <span class="kw">let </span>serialized_action_row: String = serde_json::to_string(<span class="kw-2">&amp;</span>action_row).unwrap();
 
         <span class="kw">let </span>deserized_action_row: <span class="prelude-ty">Result</span>&lt;CreateActionRow, <span class="kw">_</span>&gt; =
-            serde_json::from_str(<span class="kw-2">&amp;</span>serialized_action_row.replace(<span class="string">&quot;1&quot;</span>, <span class="string">&quot;2&quot;</span>));
+            serde_json::from_str(<span class="kw-2">&amp;</span>serialized_action_row.replace(<span class="string">&#39;1&#39;</span>, <span class="string">&quot;2&quot;</span>));
 
         <span class="macro">assert!</span>(deserized_action_row.is_err());
 
