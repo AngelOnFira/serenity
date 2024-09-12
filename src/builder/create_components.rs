@@ -32,7 +32,7 @@ impl serde::Serialize for CreateActionRow {
 }
 
 /// A builder for creating a button component in a message
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[must_use]
 pub struct CreateButton(Button);
 
@@ -127,6 +127,24 @@ impl Serialize for CreateSelectMenuDefault {
     }
 }
 
+impl<'de> Deserialize<'de> for CreateSelectMenuDefault {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let json = json::Value::deserialize(deserializer)?;
+        let id = json.get("id").unwrap().as_u64().unwrap();
+        let kind = json.get("type").unwrap().as_str().unwrap();
+        let mention = match kind {
+            "channel" => Mention::Channel(ChannelId::new(id)),
+            "role" => Mention::Role(RoleId::new(id)),
+            "user" => Mention::User(UserId::new(id)),
+            _ => return Err(serde::de::Error::custom(format!("Unknown mention type: {}", kind))),
+        };
+        Ok(CreateSelectMenuDefault(mention))
+    }
+}
+
 /// [Discord docs](https://discord.com/developers/docs/interactions/message-components#select-menu-object-select-menu-structure).
 #[derive(Clone, Debug, PartialEq)]
 pub enum CreateSelectMenuKind {
@@ -195,10 +213,80 @@ impl Serialize for CreateSelectMenuKind {
     }
 }
 
+impl<'de> Deserialize<'de> for CreateSelectMenuKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            #[serde(rename = "type")]
+            kind: u8,
+            options: Option<Vec<CreateSelectMenuOption>>,
+            channel_types: Option<Vec<ChannelType>>,
+            default_values: Option<Vec<CreateSelectMenuDefault>>,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+
+        match helper.kind {
+            3 => Ok(Self::String { options: helper.options.unwrap_or_default() }),
+            5 => Ok(Self::User {
+                default_users: helper.default_values.map(|values| {
+                    values
+                        .into_iter()
+                        .filter_map(|v| if let Mention::User(id) = v.0 { Some(id) } else { None })
+                        .collect()
+                }),
+            }),
+            6 => Ok(Self::Role {
+                default_roles: helper.default_values.map(|values| {
+                    values
+                        .into_iter()
+                        .filter_map(|v| if let Mention::Role(id) = v.0 { Some(id) } else { None })
+                        .collect()
+                }),
+            }),
+            7 => {
+                let (default_users, default_roles) = helper.default_values.map(|values| {
+                    values.into_iter().fold((Vec::new(), Vec::new()), |(mut users, mut roles), v| {
+                        match v.0 {
+                            Mention::User(id) => users.push(id),
+                            Mention::Role(id) => roles.push(id),
+                            _ => {}
+                        }
+                        (users, roles)
+                    })
+                }).unwrap_or_default();
+
+                Ok(Self::Mentionable {
+                    default_users: if default_users.is_empty() { None } else { Some(default_users) },
+                    default_roles: if default_roles.is_empty() { None } else { Some(default_roles) },
+                })
+            },
+            8 => Ok(Self::Channel {
+                channel_types: helper.channel_types,
+                default_channels: helper.default_values.map(|values| {
+                    values
+                        .into_iter()
+                        .filter_map(|v| match v.0 {
+                            Mention::Channel(id) => Some(id),
+                            _ => None,
+                        })
+                        .collect()
+                }),
+            }),
+            _ => {
+                Err(serde::de::Error::custom(format!("Unknown select menu type: {}", helper.kind)))
+            },
+        }
+    }
+}
+
 /// A builder for creating a select menu component in a message
 ///
 /// [Discord docs](https://discord.com/developers/docs/interactions/message-components#select-menu-object-select-menu-structure).
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[must_use]
 pub struct CreateSelectMenu {
     custom_id: String,
@@ -264,7 +352,7 @@ impl CreateSelectMenu {
 /// A builder for creating an option of a select menu component in a message
 ///
 /// [Discord docs](https://discord.com/developers/docs/interactions/message-components#select-menu-object-select-option-structure)
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[must_use]
 pub struct CreateSelectMenuOption {
     label: String,
